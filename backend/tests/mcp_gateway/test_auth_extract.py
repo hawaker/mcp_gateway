@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 import pytest
+from sqlalchemy.dialects import mysql, postgresql, sqlite
+from sqlalchemy.schema import CreateIndex
 
 from app.modules.mcp_gateway.auth.extract import (
     REGEX_MATCH_TIMEOUT_SECONDS,
@@ -12,6 +14,9 @@ from app.modules.mcp_gateway.auth.extract import (
     extract_token,
     resolve_url,
 )
+from app.modules.mcp_gateway.auth.model import AuthConfigModel
+
+_ONE_ENABLED_INDEX_SQL = "CREATE UNIQUE INDEX uq_mcp_biz_auth_config_one_enabled ON mcp_biz_auth_config ((CASE WHEN enabled THEN system_id ELSE NULL END))"
 
 
 def _around(seconds: float, moment: datetime) -> tuple[datetime, datetime]:
@@ -152,3 +157,14 @@ def test_regex_match_stops_at_named_timeout():
             rule={"token_from": "regex", "token_name": r"(a+)+$", "expires_seconds": 10},
         )
     assert time.monotonic() - started < REGEX_MATCH_TIMEOUT_SECONDS + 2
+
+
+def test_one_enabled_index_is_functional_on_mysql_sqlite_and_postgresql():
+    index = next(idx for idx in AuthConfigModel.__table__.indexes if idx.name == "uq_mcp_biz_auth_config_one_enabled")
+    for dialect in (mysql.dialect(), sqlite.dialect(), postgresql.dialect()):
+        sql = str(CreateIndex(index).compile(dialect=dialect))
+        assert sql == _ONE_ENABLED_INDEX_SQL
+        assert "CASE WHEN enabled THEN system_id ELSE NULL END" in sql
+    mysql_sql = str(CreateIndex(index).compile(dialect=mysql.dialect())).replace("`", "")
+    assert mysql_sql != "CREATE UNIQUE INDEX uq_mcp_biz_auth_config_one_enabled ON mcp_biz_auth_config (system_id)"
+    assert "UNIQUE (system_id)" not in mysql_sql

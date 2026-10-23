@@ -19,19 +19,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    # MySQL 没有部分索引。函数索引在 enabled 为假时得到 NULL，多条未启用记录可以并存。
-    if bind.dialect.name == "mysql":
-        op.execute("CREATE UNIQUE INDEX uq_mcp_biz_auth_config_one_enabled ON mcp_biz_auth_config ((CASE WHEN enabled = 1 THEN system_id ELSE NULL END))")
-        return
-    where = sa.text("enabled IS TRUE") if bind.dialect.name == "postgresql" else sa.text("enabled = 1")
-    dialect_where = {"postgresql_where": where} if bind.dialect.name == "postgresql" else {"sqlite_where": where}
+    # 与模型相同的函数唯一索引。enabled 为假时表达式为 NULL，三个方言都允许多个 NULL。
     op.create_index(
         "uq_mcp_biz_auth_config_one_enabled",
         "mcp_biz_auth_config",
-        ["system_id"],
+        [sa.text("(CASE WHEN enabled THEN system_id ELSE NULL END)")],
         unique=True,
-        **dialect_where,
     )
 
 

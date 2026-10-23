@@ -9,12 +9,12 @@ class AuthConfigModel(ModelMixin):
 
     __tablename__: str = "mcp_biz_auth_config"
     __table_args__ = (
+        # 禁用时为 NULL。唯一索引允许多个 NULL，因此同一系统可以有多条未启用记录。
+        # 括号让 MySQL 把它当成函数索引；SQLite 和 PostgreSQL 同样接受。
         Index(
             "uq_mcp_biz_auth_config_one_enabled",
-            "system_id",
+            text("(CASE WHEN enabled THEN system_id ELSE NULL END)"),
             unique=True,
-            sqlite_where=text("enabled = 1"),
-            postgresql_where=text("enabled IS TRUE"),
         ),
         {"comment": "业务鉴权配置表"},
     )
