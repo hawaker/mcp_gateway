@@ -7,6 +7,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -239,12 +240,55 @@ def mask_secret(value: Any, secret: str) -> Any:
     if not secret:
         return value
     if isinstance(value, str):
-        return value.replace(secret, _MASK)
+        return _mask_text(value, secret)
     if isinstance(value, dict):
         return {str(key): mask_secret(item, secret) for key, item in value.items()}
     if isinstance(value, list):
         return [mask_secret(item, secret) for item in value]
     return value
+
+
+def _mask_text(text: str, secret: str) -> str:
+    encoded = quote(secret, safe="")
+    masked = _mask_url(text, secret, encoded)
+    masked = masked.replace(secret, _MASK)
+    if encoded != secret:
+        masked = masked.replace(encoded, _MASK)
+    return masked
+
+
+def _mask_url(text: str, secret: str, encoded: str) -> str:
+    parts = urlsplit(text)
+    if not parts.scheme or not parts.netloc:
+        return text
+    path = _mask_decoded(parts.path, secret, encoded, unquote)
+    query = _mask_query(parts.query, secret, encoded)
+    if path == parts.path and query == parts.query:
+        return text
+    return urlunsplit((parts.scheme, parts.netloc, path, query, parts.fragment))
+
+
+def _mask_decoded(text: str, secret: str, encoded: str, decode) -> str:
+    updated = text.replace(encoded, _MASK) if encoded and encoded != secret else text
+    decoded = decode(updated)
+    if secret not in decoded:
+        return updated
+    return quote(decoded.replace(secret, _MASK), safe="/*")
+
+
+def _mask_query(query: str, secret: str, encoded: str) -> str:
+    if not query:
+        return query
+    updated = query.replace(encoded, _MASK) if encoded and encoded != secret else query
+    pairs = parse_qsl(updated, keep_blank_values=True)
+    if not any(secret in key or secret in value for key, value in pairs):
+        return updated
+    masked_pairs = [(key.replace(secret, _MASK), value.replace(secret, _MASK)) for key, value in pairs]
+    return urlencode(masked_pairs, quote_via=_quote_masked)
+
+
+def _quote_masked(value: str, safe: str = "", encoding: str | None = None, errors: str | None = None) -> str:
+    return quote(value, safe=f"{safe}*", encoding=encoding, errors=errors)
 
 
 def _tool_dict(tool: Mapping[str, Any] | RestToolCreateSchema | RestToolModel) -> dict[str, Any]:

@@ -167,3 +167,91 @@ async def test_debug_unsaved_form_skips_log_and_unbound_user() -> None:
     with pytest.raises(BindingUnavailable):
         await unbound.debug(_draft(), USER_ID, {"page": 1, "token": "from-client"})
     assert unbound_seen == []
+
+
+async def _debug_bound(
+    draft: dict[str, Any],
+    arguments: dict[str, Any],
+    *,
+    token: str = _BUSINESS_TOKEN,
+    reveal: bool = False,
+):
+    """已绑定用户调试一次。登录和业务请求都进 MockTransport，不访问真实 OA。"""
+    ExpiringRedis = _load_expiring_redis()
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.rstrip("/").endswith("/login"):
+            return httpx.Response(200, json={"token": token, "expires_in": 60})
+        return httpx.Response(200, json={"ok": True})
+
+    service = _service(httpx.MockTransport(handler), ExpiringRedis(), [], [], binding=_binding())
+    result = await service.debug(draft, USER_ID, arguments, reveal=reveal)
+    business = [request for request in seen if not request.url.path.rstrip("/").endswith("/login")]
+    return result, business
+
+
+async def test_caller_query_placeholders_are_forwarded_unchanged() -> None:
+    """查询参数里的 {{token}}、{{user.uid}} 原样转发。Authorization 仍是业务 token，调试视图把它遮住。"""
+    result, business = await _debug_bound(_draft(), {"page": 1, "q": "{{token}}", "who": "{{user.uid}}"})
+
+    assert len(business) == 1
+    request = business[0]
+    assert request.url.params["q"] == "{{token}}"
+    assert request.url.params["who"] == "{{user.uid}}"
+    assert request.headers["authorization"] == f"Bearer {_BUSINESS_TOKEN}"
+    assert request.headers["x-uid"] == "zhangsan"
+    rendered = json.dumps({"request": result.request, "response": result.response}, ensure_ascii=False)
+    assert _BUSINESS_TOKEN not in rendered
+    assert "Bearer ******" in rendered
+
+
+async def test_caller_body_placeholders_are_forwarded_unchanged() -> None:
+    """JSON 正文里的 {{token}}、{{user.uid}} 原样转发。Authorization 仍是业务 token，调试视图把它遮住。"""
+    draft = _draft()
+    draft["request_type"] = "POST"
+    draft["url"] = "/notes"
+    result, business = await _debug_bound(draft, {"note": "{{token}}", "who": "{{user.uid}}"})
+
+    assert len(business) == 1
+    request = business[0]
+    assert json.loads(request.content) == {"note": "{{token}}", "who": "{{user.uid}}"}
+    assert request.headers["authorization"] == f"Bearer {_BUSINESS_TOKEN}"
+    assert request.headers["x-uid"] == "zhangsan"
+    rendered = json.dumps({"request": result.request, "response": result.response}, ensure_ascii=False)
+    assert _BUSINESS_TOKEN not in rendered
+    assert "Bearer ******" in rendered
+
+
+async def test_debug_masks_percent_encoded_token_in_query_url() -> None:
+    """token 含 + / = 且放在 query 时，reveal 为 false 的请求视图不包含原文，也不包含 quote(token, safe="")。"""
+    from urllib.parse import parse_qs, quote, unquote, urlsplit
+
+    token = "sec+ret/tok="
+    encoded = quote(token, safe="")
+    draft = _draft()
+    draft["token_in"] = "query"
+    draft["token_name"] = "access_token"
+    result, business = await _debug_bound(
+        draft,
+        {"page": 1, "access_token": "{{token}}"},
+        token=token,
+        reveal=False,
+    )
+
+    assert len(business) == 1
+    assert business[0].url.params["access_token"] == token
+    assert encoded in str(business[0].url)
+    url = result.request["url"]
+    assert token not in url
+    assert encoded not in url
+    parts = urlsplit(url)
+    assert token not in unquote(parts.path)
+    for values in parse_qs(parts.query).values():
+        for item in values:
+            assert token not in item
+            assert encoded not in item
+    rendered = json.dumps(result.request, ensure_ascii=False)
+    assert token not in rendered
+    assert encoded not in rendered

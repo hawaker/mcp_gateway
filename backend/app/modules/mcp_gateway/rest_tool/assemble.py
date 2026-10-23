@@ -1,7 +1,8 @@
 """把 REST 工具和调用参数收成一次上游请求。调试和正式调用共用这里。
 
 URL 里的 {参数} 先替换。GET 的其余参数进 query，其他方法进 body。
-query_mapping、header_mapping 把指名的参数放到对应位置。{{token}} 留给 AuthClient 渲染。
+query_mapping、header_mapping 把指名的参数放到对应位置。
+工具 URL、配置的 header、token 槽位仍是模板。调用参数的值原样上送，不再渲染。
 """
 
 import re
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
+from app.modules.mcp_gateway.auth.client import CallerLiteral
 from app.modules.mcp_gateway.auth.extract import resolve_url
 
 _DOUBLE = re.compile(r"\{\{(?:system\.[A-Za-z0-9_]+|user\.uid|user\.attr\.[A-Za-z0-9_]+|token)\}\}")
@@ -47,16 +49,18 @@ def prepare_call(base_url: str, tool: Mapping[str, Any], arguments: Mapping[str,
     if query_mapping:
         for source, target in query_mapping.items():
             if source in args:
-                params[target] = args.pop(source)
+                params[target] = CallerLiteral(args.pop(source))
     if header_mapping:
         for source, target in header_mapping.items():
             if source in args:
-                headers[target] = _as_text(args.pop(source))
+                headers[target] = CallerLiteral(_as_text(args.pop(source)))
 
     if method == "GET":
-        params.update(args)
+        for key, value in args.items():
+            params[str(key)] = CallerLiteral(value)
     else:
-        body.update(args)
+        for key, value in args.items():
+            body[str(key)] = CallerLiteral(value)
 
     _place_token(tool, headers, params, body)
     return PreparedCall(

@@ -23,6 +23,15 @@ from app.modules.mcp_gateway.token_cache.store import TokenCache
 _PLACEHOLDER = re.compile(r"\{\{(?:system\.(?P<system>[A-Za-z0-9_]+)|user\.uid|user\.attr\.(?P<attr>[A-Za-z0-9_]+)|token)\}\}")
 
 
+class CallerLiteral:
+    """调用方传入的原值。业务请求先渲染工具模板，再把这些值并进去，且不再渲染。"""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+
 class BindingUnavailable(Exception):
     """没有可用绑定。这次不会向业务系统发请求。"""
 
@@ -234,16 +243,17 @@ class AuthClient:
         token: str,
         timeout: float | None = None,
     ) -> httpx.Response:
+        # URL、配置 header、token 槽位是模板。CallerLiteral 在渲染之后并入，原文上送。
         target = resolve_url(self.system.base_url, self._render_text(url, token=token))
         kwargs: dict[str, Any] = {}
         if headers is not None:
-            kwargs["headers"] = self._render_mapping(headers, token=token)
+            kwargs["headers"] = self._render_then_literals(headers, token=token, stringify=True)
         if params is not None:
-            kwargs["params"] = self._render_mapping(params, token=token)
+            kwargs["params"] = self._render_then_literals(params, token=token, stringify=True)
         if form is not None:
-            kwargs["data"] = self._render_mapping(form, token=token)
+            kwargs["data"] = self._render_then_literals(form, token=token, stringify=True)
         elif json_body is not None:
-            kwargs["json"] = self._render_value(json_body, token=token)
+            kwargs["json"] = self._render_then_literals(json_body, token=token, stringify=False)
         if timeout is not None:
             kwargs["timeout"] = timeout
         return await self._request(method, target, **kwargs)
@@ -266,11 +276,33 @@ class AuthClient:
             raise BindingUnavailable("没有可用的业务绑定")
         return self.binding
 
+    def _render_then_literals(self, value: Mapping[str, Any], *, token: str | None, stringify: bool) -> dict[str, Any]:
+        templates: dict[str, Any] = {}
+        literals: dict[str, Any] = {}
+        for key, item in value.items():
+            name = str(key)
+            if isinstance(item, CallerLiteral):
+                literals[name] = item.value
+            else:
+                templates[name] = item
+        if stringify:
+            rendered: dict[str, Any] = self._render_mapping(templates, token=token)
+        else:
+            rendered_value = self._render_value(templates, token=token)
+            rendered = rendered_value if isinstance(rendered_value, dict) else {}
+        for name, item in literals.items():
+            if name in rendered:
+                continue
+            rendered[name] = _as_text(item) if stringify else item
+        return rendered
+
     def _render_mapping(self, value: Mapping[str, Any], *, token: str | None) -> dict[str, str]:
         rendered = self._render_value(dict(value), token=token)
         return {str(key): _as_text(item) for key, item in rendered.items()}
 
     def _render_value(self, value: Any, *, token: str | None) -> Any:
+        if isinstance(value, CallerLiteral):
+            return value.value
         if isinstance(value, str):
             return self._render_text(value, token=token)
         if isinstance(value, Mapping):
