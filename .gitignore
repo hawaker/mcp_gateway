@@ -37,6 +37,7 @@ cython_debug
 
 venv
 .venv
+.worktrees/
 
 node_modules
 .npm
