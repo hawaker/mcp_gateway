@@ -10,10 +10,12 @@ function emptyToUndefined(value: string | undefined): string | undefined {
 export function toUpstreamPayload(body: UpstreamForm, mode: "create" | "update") {
   const credential = emptyToUndefined(body.credential_value);
   const payload: Record<string, unknown> = {
-    system_id: body.system_id,
     url: (body.url ?? "").trim(),
     credential_header: (body.credential_header ?? "").trim(),
   };
+  if (mode === "create") {
+    payload.system_id = body.system_id;
+  }
   if (mode === "create" || credential) {
     payload.credential_value = credential ?? "";
   }
@@ -49,6 +51,14 @@ const UpstreamAPI = {
       url: `${API_PATH}/update/${id}`,
       method: "put",
       data: toUpstreamPayload(body, "update"),
+    });
+  },
+
+  deleteUpstream(ids: number[]) {
+    return request<ApiResponse>({
+      url: `${API_PATH}/delete`,
+      method: "delete",
+      data: ids,
     });
   },
 

@@ -45,9 +45,8 @@ class UpstreamMcpCreateSchema(BaseModel):
 
 
 class UpstreamMcpUpdateSchema(BaseModel):
-    """更新上游 MCP。省略凭证或传空字符串时保留原密文。"""
+    """更新上游 MCP。system_id 只在创建时写入。省略凭证或传空字符串时保留原密文。"""
 
-    system_id: int | None = Field(default=None, ge=1, description="业务系统ID")
     url: str | None = Field(default=None, min_length=1, max_length=2048, description="上游地址")
     credential_header: str | None = Field(default=None, min_length=1, max_length=128, description="凭证请求头")
     credential_value: str | None = Field(default=None, max_length=8192, description="凭证")

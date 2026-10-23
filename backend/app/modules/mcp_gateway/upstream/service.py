@@ -41,7 +41,7 @@ def upstream_update_payload(data: UpstreamMcpUpdateSchema) -> dict[str, Any]:
     """只收集提交过的字段。没有新凭证时不写密文列。"""
     submitted = data.model_dump(exclude_unset=True)
     payload: dict[str, Any] = {}
-    for key in ("system_id", "url", "credential_header"):
+    for key in ("url", "credential_header"):
         if key in submitted and submitted[key] is not None:
             payload[key] = submitted[key]
     credential = submitted.get("credential_value")
@@ -93,12 +93,25 @@ class UpstreamService:
         if current is None:
             raise CustomException(msg="上游 MCP 不存在")
         payload = upstream_update_payload(data)
-        if "system_id" in payload and payload["system_id"] != current.system_id:
-            await self._require_system(payload["system_id"])
         if not payload:
             return UpstreamMcpOutSchema.model_validate(current)
         obj = await self._mcp_crud().update(id=upstream_id, data=payload)
         return UpstreamMcpOutSchema.model_validate(obj)
+
+    async def delete(self, ids: list[int]) -> None:
+        """软删除上游 MCP，并同时软删除它名下的工具，之后 call 不会再看见这些工具。"""
+        if not ids:
+            raise CustomException(msg="删除失败，删除对象不能为空")
+        rows = await self._mcp_crud().get_list(search={"id": ("in", ids)})
+        found = {row.id for row in rows}
+        for upstream_id in ids:
+            if upstream_id not in found:
+                raise CustomException(msg="上游 MCP 不存在")
+        tools = await self._tool_crud().get_list(search={"upstream_id": ("in", ids)})
+        tool_ids = [tool.id for tool in tools if tool.id is not None]
+        if tool_ids:
+            await self._tool_crud().delete(ids=tool_ids)
+        await self._mcp_crud().delete(ids=ids)
 
     async def page_tools(
         self,

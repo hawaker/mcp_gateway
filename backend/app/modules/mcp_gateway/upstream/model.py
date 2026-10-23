@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base_model import ModelMixin
@@ -26,7 +26,14 @@ class UpstreamToolModel(ModelMixin):
     """上游 MCP 暴露的一个工具。selected 只由管理员显式修改。"""
 
     __tablename__: str = "mcp_upstream_tool"
-    __table_args__: dict[str, str] = {"comment": "上游 MCP 工具表"}
+    __table_args__ = (
+        UniqueConstraint(
+            "upstream_id",
+            "remote_name",
+            name="uq_mcp_upstream_tool_upstream_id_remote_name",
+        ),
+        {"comment": "上游 MCP 工具表"},
+    )
 
     upstream_id: Mapped[int] = mapped_column(
         Integer,

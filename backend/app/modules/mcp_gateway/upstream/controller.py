@@ -83,6 +83,16 @@ async def update_upstream_controller(
     return SuccessResponse(data=result, msg="修改上游 MCP 成功")
 
 
+@UpstreamRouter.delete("/delete", summary="删除上游 MCP", response_model=ResponseSchema[None])
+async def delete_upstream_controller(
+    auth: Annotated[AuthSchema, Security(AuthPermission(["module_mcp_gateway:upstream:delete"]))],
+    db: Annotated[AsyncSession, Depends(db_getter)],
+    ids: Annotated[list[int], Body(description="上游 MCP ID列表")],
+) -> JSONResponse:
+    await UpstreamService(auth, db).delete(ids=ids)
+    return SuccessResponse(msg="删除上游 MCP 成功")
+
+
 @UpstreamRouter.get(
     "/tool/list",
     summary="分页查询上游工具",

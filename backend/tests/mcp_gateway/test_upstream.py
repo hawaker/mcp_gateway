@@ -305,3 +305,56 @@ def test_system_id_is_not_unique() -> None:
     for index in table.indexes:
         if [column.name for column in index.columns] == ["system_id"]:
             assert index.unique is False
+
+
+def test_update_schema_has_no_system_id() -> None:
+    """创建之后 system_id 不再可写。改系统会让旧外部名停在原来的 code 前缀上。"""
+    from app.modules.mcp_gateway.upstream.schema import UpstreamMcpUpdateSchema
+
+    assert "system_id" not in UpstreamMcpUpdateSchema.model_fields
+
+
+def test_tool_remote_name_is_unique_per_upstream() -> None:
+    """同一上游的 remote_name 只有一行，软删除的行也占着这个唯一约束。"""
+    from sqlalchemy import UniqueConstraint
+
+    from app.modules.mcp_gateway.upstream.model import UpstreamToolModel
+
+    table = UpstreamToolModel.__table__
+    matched = [
+        constraint
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+        and [column.name for column in constraint.columns] == ["upstream_id", "remote_name"]
+    ]
+    assert len(matched) == 1
+    constraint = matched[0]
+    assert constraint.name is not None
+    assert "upstream_id" in constraint.name
+    assert "remote_name" in constraint.name
+    for index in table.indexes:
+        if index.unique and [column.name for column in index.columns] == ["upstream_id", "remote_name"]:
+            where = None
+            for dialect_opts in index.dialect_options.values():
+                where = where or dialect_opts.get("where")
+            assert where is None
+
+
+async def test_deleted_upstream_and_tools_are_rejected_before_any_request() -> None:
+    """上游 MCP 和它的工具被标成已删除后，call 在发出 HTTP 之前拒绝。"""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {}})
+
+    tool = _tool(selected=True)
+    tool.is_deleted = True
+    client = _client(
+        httpx.MockTransport(handler),
+        [tool],
+        upstream=_upstream(is_deleted=True),
+    )
+    with pytest.raises(CustomException):
+        await client.call(UPSTREAM_ID, EXTERNAL_NAME, {"q": "hello"})
+    assert seen == []

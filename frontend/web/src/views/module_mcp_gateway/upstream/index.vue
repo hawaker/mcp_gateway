@@ -87,6 +87,7 @@
             type="primary"
             plain
             :loading="refreshLoading"
+            :disabled="refreshLoading"
             @click="handleRefreshTools"
           >
             拉取工具
@@ -181,6 +182,13 @@ function rowActions(row: UpstreamTable): TableOperationAction[] {
       perm: "module_mcp_gateway:upstream:update",
       run: () => void openEdit(row),
     },
+    {
+      key: "delete",
+      label: "删除",
+      artType: "delete",
+      perm: "module_mcp_gateway:upstream:delete",
+      run: () => void removeUpstream(row),
+    },
   ];
 }
 
@@ -198,6 +206,7 @@ const {
   refreshData,
   refreshCreate,
   refreshUpdate,
+  refreshRemove,
 } = useTable({
   core: {
     apiFn: UpstreamAPI.listUpstream,
@@ -217,7 +226,7 @@ const {
       {
         prop: "operation",
         label: "操作",
-        width: 140,
+        width: 180,
         fixed: "right",
         align: "center",
         formatter: (row: UpstreamTable) =>
@@ -284,7 +293,12 @@ const dialogFormItems = computed<FormItem[]>(() => [
     key: "system_id",
     type: "select",
     span: 24,
-    props: { placeholder: "请选择业务系统", options: systemOptions.value, filterable: true },
+    props: {
+      placeholder: "请选择业务系统",
+      options: systemOptions.value,
+      filterable: true,
+      disabled: dialogVisible.type === "update",
+    },
   },
   {
     label: "上游地址",
@@ -361,6 +375,17 @@ async function openEdit(row: UpstreamTable) {
   if (!row.id) return;
   await loadSystems();
   await handleOpenDialog("update", row.id);
+}
+
+async function removeUpstream(row: UpstreamTable) {
+  if (!row.id) return;
+  try {
+    await confirmDelete(`确定删除「${row.url ?? row.id}」吗？`);
+    await UpstreamAPI.deleteUpstream([row.id]);
+    await refreshRemove();
+  } catch {
+    // 用户取消
+  }
 }
 
 async function handleSearch(params: UpstreamPageQuery) {
