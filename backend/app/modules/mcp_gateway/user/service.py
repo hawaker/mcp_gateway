@@ -92,3 +92,12 @@ class BizUserGroupService:
     async def create(self, data: BizUserGroupCreateSchema) -> BizUserGroupOutSchema:
         obj = await BizUserGroupCRUD(self.auth, self.db).create(data=data)
         return BizUserGroupOutSchema.model_validate(obj)
+
+    async def list_member_user_ids(self, group_id: int) -> list[int]:
+        """读取该组在成员表中已存储的用户 ID，不回显请求体。"""
+        rows = await self.db.execute(
+            select(BizUserGroupMemberModel.user_id).where(
+                BizUserGroupMemberModel.group_id == group_id,
+            )
+        )
+        return list(rows.scalars().all())

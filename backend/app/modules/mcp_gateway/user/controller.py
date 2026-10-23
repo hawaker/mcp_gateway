@@ -81,6 +81,21 @@ async def create_biz_user_group_controller(
     return SuccessResponse(data=result, msg="创建业务用户组成功")
 
 
+@BizUserGroupRouter.get(
+    "/{id}/members",
+    summary="查询业务用户组成员",
+    response_model=ResponseSchema[BizUserGroupMemberOutSchema],
+)
+async def list_biz_user_group_members_controller(
+    auth: Annotated[AuthSchema, Security(AuthPermission(["module_mcp_gateway:biz-user-group:query"]))],
+    db: Annotated[AsyncSession, Depends(db_getter)],
+    id: Annotated[int, Path(description="用户组ID", ge=1)],
+) -> JSONResponse:
+    user_ids = await BizUserGroupService(auth, db).list_member_user_ids(group_id=id)
+    result = BizUserGroupMemberOutSchema(id=id, user_ids=user_ids)
+    return SuccessResponse(data=result, msg="查询组成员成功")
+
+
 @BizUserGroupRouter.post(
     "/{id}/members",
     summary="添加业务用户组成员",

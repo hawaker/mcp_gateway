@@ -36,3 +36,9 @@ def test_user_can_join_multiple_groups(test_client: TestClient, auth_headers: di
         headers=auth_headers,
     )
     assert resp.status_code == 200
+    for group in (g1, g2):
+        members = test_client.get(
+            f"/mcp-gateway/biz-user-group/{group['id']}/members",
+            headers=auth_headers,
+        )
+        assert user["id"] in members.json()["data"]["user_ids"]
