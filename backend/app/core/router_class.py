@@ -28,6 +28,7 @@ _SENSITIVE_KEYS: set[str] = {
     "client_secret",
     "secret_key",
     "authorization",
+    "credential_value",
 }
 _REDACTED = "******"
 

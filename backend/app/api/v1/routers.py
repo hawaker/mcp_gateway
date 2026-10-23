@@ -11,6 +11,7 @@ from app.modules.mcp_gateway.binding.controller import BizBindingRouter
 from app.modules.mcp_gateway.rest_tool.controller import RestToolRouter
 from app.modules.mcp_gateway.system.controller import BizSystemRouter
 from app.modules.mcp_gateway.token_cache.controller import BizTokenCacheRouter
+from app.modules.mcp_gateway.upstream.controller import UpstreamRouter
 from app.modules.mcp_gateway.user.controller import BizUserGroupRouter, BizUserRouter
 from app.modules.monitor.cache.controller import CacheRouter
 from app.modules.monitor.health.controller import HealthRouter
@@ -77,6 +78,7 @@ DOMAIN_CONTROLLERS: dict[str, list[APIRouter]] = {
         BizTokenCacheRouter,
         InteractiveAuthRouter,
         RestToolRouter,
+        UpstreamRouter,
     ],
 }
 
