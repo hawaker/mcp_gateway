@@ -1,14 +1,23 @@
-from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base_model import ModelMixin
 
 
 class AuthConfigModel(ModelMixin):
-    """业务系统鉴权配置。同一系统同时只有一条启用记录，由服务层在保存时保证。"""
+    """业务系统鉴权配置。同一系统同时只有一条启用记录。"""
 
     __tablename__: str = "mcp_biz_auth_config"
-    __table_args__: dict[str, str] = {"comment": "业务鉴权配置表"}
+    __table_args__ = (
+        Index(
+            "uq_mcp_biz_auth_config_one_enabled",
+            "system_id",
+            unique=True,
+            sqlite_where=text("enabled = 1"),
+            postgresql_where=text("enabled IS TRUE"),
+        ),
+        {"comment": "业务鉴权配置表"},
+    )
 
     system_id: Mapped[int] = mapped_column(
         Integer,

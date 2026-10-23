@@ -44,6 +44,7 @@ class AuthConfigService:
     async def create(self, data: AuthConfigCreateSchema) -> AuthConfigOutSchema:
         await self._require_system(data.system_id)
         self._validate_method_fields(data.method, data.http_method, data.username, data.password)
+        await self._lock_systems(data.system_id)
         if data.enabled:
             await self._disable_others(data.system_id, keep_id=None)
         obj = await AuthConfigCRUD(self.auth, self.db).create(data=data)
@@ -63,6 +64,7 @@ class AuthConfigService:
         password = submitted.get("password", current.password)
         self._validate_method_fields(method, http_method, username, password)
         enabled = submitted.get("enabled", current.enabled)
+        await self._lock_systems(current.system_id, system_id)
         if enabled:
             await self._disable_others(system_id, keep_id=config_id)
         obj = await AuthConfigCRUD(self.auth, self.db).update(id=config_id, data=data)
@@ -72,6 +74,12 @@ class AuthConfigService:
         system = await BizSystemCRUD(self.auth, self.db).get(id=system_id)
         if system is None:
             raise CustomException(msg="业务系统不存在")
+
+    async def _lock_systems(self, *system_ids: int) -> None:
+        """按系统 ID 顺序锁鉴权行，两次并发保存会排成一队。"""
+        crud = AuthConfigCRUD(self.auth, self.db)
+        for system_id in sorted(set(system_ids)):
+            await crud.lock_system_rows(system_id)
 
     async def _disable_others(self, system_id: int, keep_id: int | None) -> None:
         """保存一条启用配置时，把该系统其他配置改成未启用。"""

@@ -4,18 +4,45 @@
 """
 
 import json
+import pickle
 import re
-import threading
+import select
+import subprocess
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import parse_qs, urljoin
+from urllib.parse import parse_qs
 
 # 正则只看这么多正文，避免超长输入把匹配拖死。
 REGEX_MAX_INPUT_LENGTH = 8192
-# 匹配超过此时长就放弃。调用方不再等待，工作线程是守护线程。
+# 匹配超过此时长就杀掉子进程。CPython 停不掉正在跑的 re.search。
 REGEX_MATCH_TIMEOUT_SECONDS = 0.2
+# 子进程起来再发这个字节，超时只计算其后的匹配，不算解释器启动。
+_REGEX_READY = b"R"
+_REGEX_STARTUP_TIMEOUT_SECONDS = 2.0
+
+# 子进程只跑 re.search，不导入应用。先发就绪字节，再读模式和正文。
+_REGEX_MATCH_SCRIPT = """\
+import pickle
+import re
+import sys
+
+sys.stdout.buffer.write(b"R")
+sys.stdout.buffer.flush()
+pattern, text = pickle.load(sys.stdin.buffer)
+try:
+    match = re.search(pattern, text)
+except Exception as exc:
+    pickle.dump(("error", type(exc).__name__), sys.stdout.buffer)
+else:
+    if match is None or match.lastindex is None:
+        pickle.dump(("miss", None), sys.stdout.buffer)
+    else:
+        pickle.dump(("ok", match.group(1)), sys.stdout.buffer)
+sys.stdout.buffer.flush()
+"""
 
 _BEARER_PREFIX = "Bearer "
 
@@ -32,10 +59,12 @@ class TokenBundle:
 
 
 def resolve_url(base_url: str, url: str) -> str:
-    """http:// 或 https:// 原样使用，其余接到 base_url 上。"""
+    """http:// 或 https:// 原样使用，其余接到 base_url 上，保留 base 的路径。"""
     if url.startswith("http://") or url.startswith("https://"):
         return url
-    return urljoin(base_url, url)
+    base = base_url[:-1] if base_url.endswith("/") else base_url
+    relative = url if url.startswith("/") else f"/{url}"
+    return f"{base}{relative}"
 
 
 def extract_token(*, body: str, headers: Mapping[str, str], rule: Mapping[str, Any]) -> TokenBundle:
@@ -175,42 +204,70 @@ def _form_field(body: str, name: str) -> str:
 
 
 def _regex_group(pattern: str, text: str) -> str:
-    match = _regex_search(pattern, text)
-    if match is None or match.lastindex is None:
-        raise TokenExtractError("正则未取到 token")
-    value = match.group(1)
-    if value is None:
+    value = _regex_search(pattern, text)
+    if not value:
         raise TokenExtractError("正则未取到 token")
     return value
 
 
-def _call_search(compiled: re.Pattern[str], text: str) -> re.Match[str] | None:
-    return compiled.search(text)
-
-
-def _regex_search(pattern: str, text: str) -> re.Match[str] | None:
+def _regex_search(pattern: str, text: str) -> str | None:
     bounded = text[:REGEX_MAX_INPUT_LENGTH]
     try:
-        compiled = re.compile(pattern)
+        re.compile(pattern)
     except re.error as exc:
         raise TokenExtractError("正则无效") from exc
 
-    box: dict[str, Any] = {}
+    proc = subprocess.Popen(  # noqa: S603 — 解释器路径来自当前进程，参数是固定脚本，不走 shell
+        [sys.executable, "-c", _REGEX_MATCH_SCRIPT],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        if proc.stdout is None or proc.stdin is None:
+            raise TokenExtractError("正则无效")
+        if not _wait_readable(proc.stdout, _REGEX_STARTUP_TIMEOUT_SECONDS):
+            raise TokenExtractError("正则匹配超时")
+        if proc.stdout.read(1) != _REGEX_READY:
+            raise TokenExtractError("正则无效")
+        proc.stdin.write(pickle.dumps((pattern, bounded)))
+        proc.stdin.close()
+        if not _wait_readable(proc.stdout, REGEX_MATCH_TIMEOUT_SECONDS):
+            raise TokenExtractError("正则匹配超时")
+        kind, value = pickle.load(proc.stdout)
+    except (EOFError, pickle.UnpicklingError, OSError) as exc:
+        raise TokenExtractError("正则无效") from exc
+    finally:
+        _finish_match_process(proc)
+    if kind == "error":
+        raise TokenExtractError("正则无效")
+    if kind != "ok" or not isinstance(value, str) or value == "":
+        return None
+    return value
 
-    def run() -> None:
+
+def _wait_readable(stream: Any, timeout: float) -> bool:
+    readable, _, _ = select.select([stream], [], [], timeout)
+    return bool(readable)
+
+
+def _finish_match_process(proc: subprocess.Popen[bytes]) -> None:
+    """超时或取值结束后收掉子进程，不留还在跑的 re.search。"""
+    if proc.poll() is None:
         try:
-            box["match"] = _call_search(compiled, bounded)
-        except Exception as exc:  # noqa: BLE001 — 匹配失败要转成取值错误，不能把正则异常抛出调用方
-            box["error"] = exc
-
-    worker = threading.Thread(target=run, daemon=True)
-    worker.start()
-    worker.join(REGEX_MATCH_TIMEOUT_SECONDS)
-    if worker.is_alive():
-        raise TokenExtractError("正则匹配超时")
-    if "error" in box:
-        raise TokenExtractError("正则无效") from box["error"]
-    return box.get("match")
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=1)
+    else:
+        proc.wait(timeout=1)
+    for stream in (proc.stdin, proc.stdout, proc.stderr):
+        if stream is not None and not stream.closed:
+            stream.close()
 
 
 def _parse_absolute(value: str) -> datetime:

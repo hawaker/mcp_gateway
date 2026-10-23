@@ -1,6 +1,7 @@
 """从上游响应取值，并把相对地址接到业务系统 base_url 上。不访问 OA，不写 Redis。"""
 
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -128,23 +129,26 @@ def test_extract_token_from_regex_first_group_and_input_cap():
     assert kept.access_token == "early"
 
 
-def test_regex_match_stops_at_named_timeout(monkeypatch: pytest.MonkeyPatch):
+def test_resolve_url_keeps_base_path_and_host():
+    assert resolve_url("https://oa.example.com", "/login") == "https://oa.example.com/login"
+    assert resolve_url("https://oa.example.com", "https://auth.example.com/login") == "https://auth.example.com/login"
+    assert resolve_url("https://oa.example.com/app", "/login") == "https://oa.example.com/app/login"
+    assert resolve_url("https://oa.example.com/app", "login") == "https://oa.example.com/app/login"
+    ftp_url = resolve_url("https://oa.example.com", "ftp://files.example.com/a")
+    protocol_relative = resolve_url("https://oa.example.com", "//evil.example/login")
+    assert urlsplit(ftp_url).hostname == "oa.example.com"
+    assert urlsplit(protocol_relative).hostname == "oa.example.com"
+
+
+def test_regex_match_stops_at_named_timeout():
     import time
 
-    import app.modules.mcp_gateway.auth.extract as extract
-
-    monkeypatch.setattr(extract, "REGEX_MATCH_TIMEOUT_SECONDS", 0.05)
-
-    def slow_search(compiled: object, text: str) -> None:  # noqa: ARG001
-        time.sleep(0.4)
-        return None
-
-    monkeypatch.setattr(extract, "_call_search", slow_search)
+    body = ("a" * (REGEX_MAX_INPUT_LENGTH - 1)) + "!"
     started = time.monotonic()
-    with pytest.raises(TokenExtractError):
-        extract.extract_token(
-            body="hello",
+    with pytest.raises(TokenExtractError, match="正则匹配超时"):
+        extract_token(
+            body=body,
             headers={},
-            rule={"token_from": "regex", "token_name": "(hello)", "expires_seconds": 10},
+            rule={"token_from": "regex", "token_name": r"(a+)+$", "expires_seconds": 10},
         )
-    assert time.monotonic() - started < 0.3
+    assert time.monotonic() - started < REGEX_MATCH_TIMEOUT_SECONDS + 2
