@@ -11,7 +11,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from app.modules.mcp_gateway.auth.client import AuthClient, BindingUnavailable, InteractiveAuthRequired
+from app.modules.mcp_gateway.auth.client import AuthClient, BindingUnavailable
 from app.modules.mcp_gateway.auth.extract import TokenBundle
 from app.modules.mcp_gateway.auth.model import AuthConfigModel
 from app.modules.mcp_gateway.binding.model import BizBindingModel
@@ -362,12 +362,12 @@ async def test_missing_or_disabled_binding_does_not_send_the_business_request() 
     assert seen == []
 
 
-async def test_interactive_does_not_login_or_send_the_business_request() -> None:
+async def test_interactive_uses_a_cached_token_without_logging_in() -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, json=_LOGIN_BODY)
+        return httpx.Response(200, text="biz-ok")
 
     redis = ExpiringRedis()
     client, cache = _client(httpx.MockTransport(handler), redis, auth=_auth(method="interactive", url="/verify"))
@@ -377,12 +377,15 @@ async def test_interactive_does_not_login_or_send_the_business_request() -> None
         TokenBundle(access_token="kept", expires_at=datetime.now(UTC) + timedelta(minutes=5), token_type="Bearer"),
     )
 
-    with pytest.raises(InteractiveAuthRequired):
-        await client.ensure_token(USER_ID, SYSTEM_ID, force=True)
-    with pytest.raises(InteractiveAuthRequired):
-        await client.call(USER_ID, SYSTEM_ID, **_business_call())
+    token = await client.ensure_token(USER_ID, SYSTEM_ID, force=True)
+    response = await client.call(USER_ID, SYSTEM_ID, **_business_call())
 
-    assert seen == []
+    assert token.access_token == "kept"
+    assert response.status_code == 200
+    assert response.text == "biz-ok"
+    assert len(seen) == 1
+    assert seen[0].url.path == "/app/todos"
+    assert seen[0].headers["Authorization"] == "Bearer kept"
     kept = await cache.get(USER_ID, SYSTEM_ID)
     assert kept is not None and kept.access_token == "kept"
 

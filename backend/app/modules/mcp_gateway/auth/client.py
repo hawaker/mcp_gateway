@@ -1,6 +1,7 @@
 """向业务系统同步登录，并在业务接口 401 时重新登录一次。
 
-不生成交互式验证链接，也不登记 REST 工具。
+interactive 不在这里登录。有未过期缓存就用；没有，或业务接口返回 401，就返回新的验证链接。
+不登记 REST 工具。
 """
 
 import re
@@ -11,6 +12,7 @@ from typing import Any
 import httpx
 
 from app.modules.mcp_gateway.auth.extract import TokenBundle, extract_token, resolve_url
+from app.modules.mcp_gateway.auth.interactive import InteractiveAuth
 from app.modules.mcp_gateway.auth.model import AuthConfigModel
 from app.modules.mcp_gateway.auth.refresh import run_under_token_lock
 from app.modules.mcp_gateway.binding.model import BizBindingModel
@@ -26,7 +28,11 @@ class BindingUnavailable(Exception):
 
 
 class InteractiveAuthRequired(Exception):
-    """交互式验证不在这里登录，也不会发出业务请求。"""
+    """交互式验证不在这里登录。link 是给当前用户打开的短期地址。"""
+
+    def __init__(self, link: str) -> None:
+        self.link = link
+        super().__init__(link)
 
 
 class _BorrowedTransport(httpx.AsyncBaseTransport):
@@ -43,7 +49,10 @@ class _BorrowedTransport(httpx.AsyncBaseTransport):
 
 
 class AuthClient:
-    """按 fixed、custom、basic 取 token，并带上 token 调用一次业务接口。"""
+    """按 fixed、custom、basic 取 token，并带上 token 调用一次业务接口。
+
+    interactive 只使用未过期缓存。缓存没有，或业务接口返回 401，就给出新的验证链接。
+    """
 
     def __init__(
         self,
@@ -67,7 +76,12 @@ class AuthClient:
         await self._http.aclose()
 
     async def ensure_token(self, user_id: int, system_id: int, *, force: bool = False) -> TokenBundle:
-        """返回未过期缓存。force 为真，或缓存没有可用 token 时，在锁里重新登录。"""
+        """返回未过期缓存。force 为真，或缓存没有可用 token 时，在锁里重新登录。
+
+        interactive 忽略 force：有未过期缓存就返回，没有就给出验证链接，不向业务系统登录。
+        """
+        if self.auth.method == "interactive":
+            return await self._interactive_token(user_id, system_id)
         self._require_sync(user_id, system_id)
         if not force:
             cached = await self._fresh(user_id, system_id)
@@ -93,10 +107,24 @@ class AuthClient:
         form: Mapping[str, Any] | None = None,
         arguments: Mapping[str, Any] | None = None,
     ) -> httpx.Response:
-        """取 token 后发一次业务请求。401 时删缓存、重新登录一次，再发一次，并返回第二次响应。"""
-        self._require_sync(user_id, system_id)
+        """取 token 后发一次业务请求。401 时删缓存、重新登录一次，再发一次，并返回第二次响应。
+
+        interactive 遇到 401 只删缓存并给出新链接，不调用 ensure_token(force=True)，也不再请求一次。
+        """
         # arguments 即使带了 token、uid 或系统参数，也不能改占位符的值。
         del arguments
+        if self.auth.method == "interactive":
+            return await self._call_interactive(
+                user_id,
+                system_id,
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                json_body=json_body,
+                form=form,
+            )
+        self._require_sync(user_id, system_id)
         token = await self.ensure_token(user_id, system_id)
         response = await self._send_business(method, url, headers, params, json_body, form, token.access_token)
         if response.status_code != 401:
@@ -123,9 +151,44 @@ class AuthClient:
             return None
         return bundle
 
+    async def _interactive_token(self, user_id: int, system_id: int) -> TokenBundle:
+        """有未过期缓存就用。没有则发链接。这里不能改成 HTTP 登录。"""
+        self._require_binding(user_id, system_id)
+        cached = await self._fresh(user_id, system_id)
+        if cached is not None:
+            return cached
+        raise await self._link_required(user_id, system_id)
+
+    async def _call_interactive(
+        self,
+        user_id: int,
+        system_id: int,
+        *,
+        method: str,
+        url: str,
+        headers: Mapping[str, Any] | None,
+        params: Mapping[str, Any] | None,
+        json_body: Mapping[str, Any] | None,
+        form: Mapping[str, Any] | None,
+    ) -> httpx.Response:
+        self._require_binding(user_id, system_id)
+        cached = await self._fresh(user_id, system_id)
+        if cached is None:
+            raise await self._link_required(user_id, system_id)
+        response = await self._send_business(method, url, headers, params, json_body, form, cached.access_token)
+        if response.status_code != 401:
+            return response
+        await self.cache.delete(user_id, system_id)
+        raise await self._link_required(user_id, system_id)
+
+    async def _link_required(self, user_id: int, system_id: int) -> InteractiveAuthRequired:
+        link = await InteractiveAuth(self.cache.redis).start(user_id, system_id)
+        return InteractiveAuthRequired(link)
+
     def _require_sync(self, user_id: int, system_id: int) -> None:
-        if self.auth.method == "interactive":
-            raise InteractiveAuthRequired("交互式验证不在这里登录")
+        self._require_binding(user_id, system_id)
+
+    def _require_binding(self, user_id: int, system_id: int) -> None:
         binding = self.binding
         if binding is None or not binding.enabled or binding.user_id != user_id or binding.system_id != system_id or self.system.id != system_id:
             raise BindingUnavailable("没有可用的业务绑定")

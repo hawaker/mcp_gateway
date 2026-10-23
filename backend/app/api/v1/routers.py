@@ -6,6 +6,7 @@ from app.modules.ai.chat.controller import ChatRouter
 from app.modules.common.file.controller import FileRouter
 from app.modules.generator.gencode.controller import GenRouter
 from app.modules.mcp_gateway.auth.controller import BizAuthRouter
+from app.modules.mcp_gateway.auth.interactive_controller import InteractiveAuthRouter
 from app.modules.mcp_gateway.binding.controller import BizBindingRouter
 from app.modules.mcp_gateway.system.controller import BizSystemRouter
 from app.modules.mcp_gateway.token_cache.controller import BizTokenCacheRouter
@@ -73,6 +74,7 @@ DOMAIN_CONTROLLERS: dict[str, list[APIRouter]] = {
         BizBindingRouter,
         BizAuthRouter,
         BizTokenCacheRouter,
+        InteractiveAuthRouter,
     ],
 }
 
