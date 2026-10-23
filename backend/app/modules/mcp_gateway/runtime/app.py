@@ -58,10 +58,17 @@ def build_mcp_app(
     *,
     db: Any | None = None,
     redis: Any | None = None,
+    pubsub_redis: Any | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> Starlette:
     """测试用的独立应用。路由只服务这一个组。"""
-    runtime = McpRuntime(db=db, redis=redis, transport=transport, bound_group_id=group_id)
+    runtime = McpRuntime(
+        db=db,
+        redis=redis,
+        pubsub_redis=pubsub_redis,
+        transport=transport,
+        bound_group_id=group_id,
+    )
     return Starlette(
         routes=[
             Route(f"/mcp/{group_id}", runtime.streamable, methods=["GET", "POST"]),
@@ -87,11 +94,13 @@ class McpRuntime:
         *,
         db: Any | None = None,
         redis: Any | None = None,
+        pubsub_redis: Any | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         bound_group_id: int | None = None,
     ) -> None:
         self.db = db
         self.redis = redis
+        self.pubsub_redis = pubsub_redis
         self.transport = transport
         self.bound_group_id = bound_group_id
 
@@ -117,14 +126,14 @@ class McpRuntime:
             return _unauthorized(exc)
         session_id = secrets.token_urlsafe(24)
         return StreamingResponse(
-            self._sse_events(self._redis(request), session_id, group_id),
+            self._sse_events(self._redis(request), self._pubsub_redis(request), session_id, group_id),
             media_type="text/event-stream",
             headers=_SSE_HEADERS,
         )
 
-    async def _sse_events(self, redis: Any, session_id: str, group_id: int) -> AsyncIterator[str]:
+    async def _sse_events(self, redis: Any, pubsub_redis: Any, session_id: str, group_id: int) -> AsyncIterator[str]:
         await write_session(redis, session_id, group_id)
-        pubsub = redis.pubsub()
+        pubsub = pubsub_redis.pubsub()
         try:
             await pubsub.subscribe(message_channel(session_id))
             endpoint = f"/mcp/{group_id}/messages?session_id={session_id}"
@@ -320,6 +329,12 @@ class McpRuntime:
         if self.redis is not None:
             return self.redis
         return request.app.state.redis
+
+    def _pubsub_redis(self, request: Request) -> Any:
+        """订阅用的客户端。和短命令不是同一个连接池。"""
+        if self.pubsub_redis is not None:
+            return self.pubsub_redis
+        return request.app.state.redis_pubsub
 
     @asynccontextmanager
     async def _db(self) -> AsyncIterator[Any]:

@@ -7,6 +7,21 @@ from redis.asyncio import Redis
 from app.config.setting import settings
 from app.core.logger import logger
 
+# 每条 SSE 会占住一条 pub/sub 连接，直到 GET 结束并 aclose。
+# 这个池和会话、系统缓存、调度、业务 token 共用的 POOL_SIZE 分开。
+SSE_PUBSUB_MAX_CONNECTIONS = 100
+
+
+async def _open_redis(max_connections: int) -> Redis:
+    return await Redis.from_url(
+        url=settings.REDIS_URI,
+        encoding="utf-8",
+        decode_responses=True,
+        health_check_interval=settings.REDIS_HEALTH_CHECK_INTERVAL,
+        max_connections=max_connections,
+        socket_timeout=settings.POOL_TIMEOUT,
+    )
+
 
 async def redis_connect(app: FastAPI, status: bool) -> Redis | None:
     """创建或关闭Redis连接。
@@ -20,19 +35,16 @@ async def redis_connect(app: FastAPI, status: bool) -> Redis | None:
 
     返回:
     - Redis | None: Redis连接实例（status=False 时返回 None）。
+
+    短命令放在 app.state.redis。SSE 订阅放在 app.state.redis_pubsub，进程内只建一个，连接池单独计算。
     """
     if status:
         try:
-            rd = await Redis.from_url(
-                url=settings.REDIS_URI,
-                encoding="utf-8",
-                decode_responses=True,
-                health_check_interval=settings.REDIS_HEALTH_CHECK_INTERVAL,
-                max_connections=settings.POOL_SIZE,
-                socket_timeout=settings.POOL_TIMEOUT,
-            )
+            rd = await _open_redis(settings.POOL_SIZE)
             app.state.redis = rd
-            if await rd.ping():  # pyright: ignore[reportGeneralTypeIssues]
+            pubsub = await _open_redis(SSE_PUBSUB_MAX_CONNECTIONS)
+            app.state.redis_pubsub = pubsub
+            if await rd.ping() and await pubsub.ping():  # pyright: ignore[reportGeneralTypeIssues]
                 return rd
             msg = "Redis ping 返回 False，连接不可用"
             raise exceptions.ConnectionError(msg)
@@ -41,6 +53,9 @@ async def redis_connect(app: FastAPI, status: bool) -> Redis | None:
             raise
     else:
         await app.state.redis.close()
+        pubsub = getattr(app.state, "redis_pubsub", None)
+        if pubsub is not None and pubsub is not app.state.redis:
+            await pubsub.close()
         logger.info("✅️ Redis连接已关闭")
 
 

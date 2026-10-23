@@ -602,6 +602,7 @@ class _PubSub:
         for channel in channels:
             name = _as_text(channel)
             self.channels.add(name)
+            self.redis.subscribed.append(name)
             self.redis.subscribers.setdefault(name, []).append(self.queue)
 
     async def unsubscribe(self, *channels: Any) -> None:
@@ -628,9 +629,10 @@ class _PubSub:
 class StreamingRedis(ExpiringRedis):
     """在会过期的内存 Redis 上补上 publish 和 expire。TTL 断言读这些调用。"""
 
-    def __init__(self) -> None:
+    def __init__(self, subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] | None = None) -> None:
         super().__init__()
-        self.subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = {}
+        self.subscribers = {} if subscribers is None else subscribers
+        self.subscribed: list[str] = []
         self.expire = AsyncMock(side_effect=self._expire)
         self.publish = AsyncMock(side_effect=self._publish)
 
@@ -753,7 +755,10 @@ def _session_sets(redis: StreamingRedis) -> list[Any]:
 
 
 async def test_sse_result_arrives_on_the_other_instances_get_stream(db) -> None:
-    """第一个实例收 POST，第二个实例挂着 GET。tools/list 出现在 GET 的 message 事件里。"""
+    """第一个实例收 POST，第二个实例挂着 GET。tools/list 出现在 GET 的 message 事件里。
+
+    subscribe 走 pub/sub 客户端。set 和 expire 走会话客户端。
+    """
     user = await _user(db)
     system = await _system(db, "oa_sse", base_url="https://oa.example.com")
     tool = await _rest(db, system.id, "search", jsonpath_filter=None)
@@ -761,10 +766,11 @@ async def test_sse_result_arrives_on_the_other_instances_get_stream(db) -> None:
     token = await _member(db, group.id, user.id)
     await _publish_rest(db, group.id, tool.id, "search")
     gateway = _Gateway()
-    redis = StreamingRedis()
+    session = StreamingRedis()
+    events = StreamingRedis(subscribers=session.subscribers)
     transport = httpx.MockTransport(gateway.handler)
-    first = build_mcp_app(group.id, db=db, redis=redis, transport=transport)
-    second = build_mcp_app(group.id, db=db, redis=redis, transport=transport)
+    first = build_mcp_app(group.id, db=db, redis=session, pubsub_redis=events, transport=transport)
+    second = build_mcp_app(group.id, db=db, redis=session, pubsub_redis=events, transport=transport)
     stream = _OpenSse(second, f"/mcp/{group.id}/sse", token)
 
     try:
@@ -776,7 +782,7 @@ async def test_sse_result_arrives_on_the_other_instances_get_stream(db) -> None:
         marker = f"/mcp/{group.id}/messages?session_id="
         assert endpoint.startswith(marker)
         session_id = endpoint.removeprefix(marker).strip()
-        stored = await redis.get(f"mcp:sse:{session_id}")
+        stored = await session.get(f"mcp:sse:{session_id}")
         assert stored is not None
         assert json.loads(stored)["group_id"] == group.id
 
@@ -797,18 +803,25 @@ async def test_sse_result_arrives_on_the_other_instances_get_stream(db) -> None:
                 json=_rpc("tools/list"),
             )
 
-        session_sets = _session_sets(redis)
+        session_sets = _session_sets(session)
         assert len(session_sets) == 1
         ttl = session_sets[0].kwargs["ex"]
         assert isinstance(ttl, int) and ttl >= 1
         assert session_sets[0].args[0] == f"mcp:sse:{session_id}"
-        refreshed = [call for call in redis.expire.await_args_list if call.args[0] == f"mcp:sse:{session_id}"]
+        refreshed = [call for call in session.expire.await_args_list if call.args[0] == f"mcp:sse:{session_id}"]
         assert refreshed
         assert all(call.args[1] == ttl for call in refreshed)
         assert missing.status_code == 404
         assert "tools" not in missing.text
         assert gateway.requests == []
-        keys_while_open = await redis.keys("mcp:sse:*")
+        channel = f"mcp:sse:channel:{session_id}"
+        assert events.subscribed == [channel]
+        assert session.subscribed == []
+        assert _session_sets(events) == []
+        assert [call for call in events.expire.await_args_list if call.args[0] == f"mcp:sse:{session_id}"] == []
+        assert session.publish.await_count == 1
+        assert events.publish.await_count == 0
+        keys_while_open = await session.keys("mcp:sse:*")
     finally:
         await stream.aclose()
 
@@ -818,8 +831,67 @@ async def test_sse_result_arrives_on_the_other_instances_get_stream(db) -> None:
 
     assert denied.status_code == 200
     assert denied.json()["error"] == "无权限"
-    assert await redis.keys("mcp:sse:*") == keys_while_open
-    assert len(_session_sets(redis)) == 1
+    assert await session.keys("mcp:sse:*") == keys_while_open
+    assert len(_session_sets(session)) == 1
+
+
+async def test_sse_pubsub_pool_is_not_the_shared_redis_pool(monkeypatch) -> None:
+    """进程里只有一个 SSE 客户端。它的连接池不是会话池，容量也不是 POOL_SIZE。"""
+    from types import SimpleNamespace
+
+    from app.config.setting import settings
+    from app.core.redis_crud import redis_connect
+
+    created: list[Any] = []
+
+    async def from_url(*args: Any, **kwargs: Any) -> Any:
+        del args
+        pool = kwargs.get("connection_pool")
+        if pool is None:
+            pool = SimpleNamespace(max_connections=kwargs.get("max_connections"))
+        client = SimpleNamespace(
+            connection_pool=pool,
+            ping=AsyncMock(return_value=True),
+            close=AsyncMock(),
+        )
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("app.core.redis_crud.Redis.from_url", from_url)
+    app = FastAPI()
+    await redis_connect(app, status=True)
+
+    assert len(created) == 2
+    session_client, events_client = created
+    assert app.state.redis is session_client
+    assert app.state.redis_pubsub is events_client
+    assert session_client is not events_client
+    assert session_client.connection_pool is not events_client.connection_pool
+    assert session_client.connection_pool.max_connections == settings.POOL_SIZE
+    assert events_client.connection_pool.max_connections != settings.POOL_SIZE
+    assert events_client.connection_pool.max_connections >= 100
+
+    await redis_connect(app, status=False)
+    session_client.close.assert_awaited_once()
+    events_client.close.assert_awaited_once()
+
+
+def test_uninjected_runtime_reads_pubsub_client_from_app_state() -> None:
+    """没注入客户端时，短命令读 app.state.redis，订阅读 app.state.redis_pubsub。"""
+    from types import SimpleNamespace
+
+    from app.modules.mcp_gateway.runtime.app import McpRuntime
+
+    session = StreamingRedis()
+    events = StreamingRedis(subscribers=session.subscribers)
+    app = FastAPI()
+    app.state.redis = session
+    app.state.redis_pubsub = events
+    runtime = McpRuntime()
+    request = SimpleNamespace(app=app)
+
+    assert runtime._redis(request) is session
+    assert runtime._pubsub_redis(request) is events
 
 
 async def test_runtime_routes_mount_at_app_root_without_admin_auth() -> None:
