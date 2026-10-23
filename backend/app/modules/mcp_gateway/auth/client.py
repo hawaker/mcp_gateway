@@ -1,0 +1,223 @@
+"""向业务系统同步登录，并在业务接口 401 时重新登录一次。
+
+不生成交互式验证链接，也不登记 REST 工具。
+"""
+
+import re
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Any
+
+import httpx
+
+from app.modules.mcp_gateway.auth.extract import TokenBundle, extract_token, resolve_url
+from app.modules.mcp_gateway.auth.model import AuthConfigModel
+from app.modules.mcp_gateway.auth.refresh import run_under_token_lock
+from app.modules.mcp_gateway.binding.model import BizBindingModel
+from app.modules.mcp_gateway.system.model import BizSystemModel
+from app.modules.mcp_gateway.token_cache.store import TokenCache
+
+# 只认这四种。调用参数里的同名值不参与替换。
+_PLACEHOLDER = re.compile(r"\{\{(?:system\.(?P<system>[A-Za-z0-9_]+)|user\.uid|user\.attr\.(?P<attr>[A-Za-z0-9_]+)|token)\}\}")
+
+
+class BindingUnavailable(Exception):
+    """没有可用绑定。这次不会向业务系统发请求。"""
+
+
+class InteractiveAuthRequired(Exception):
+    """交互式验证不在这里登录，也不会发出业务请求。"""
+
+
+class AuthClient:
+    """按 fixed、custom、basic 取 token，并带上 token 调用一次业务接口。"""
+
+    def __init__(
+        self,
+        *,
+        cache: TokenCache,
+        system: BizSystemModel,
+        binding: BizBindingModel | None,
+        auth: AuthConfigModel,
+        transport: httpx.AsyncBaseTransport,
+    ) -> None:
+        self.cache = cache
+        self.system = system
+        self.binding = binding
+        self.auth = auth
+        self.transport = transport
+
+    async def ensure_token(self, user_id: int, system_id: int, *, force: bool = False) -> TokenBundle:
+        """返回未过期缓存。force 为真，或缓存没有可用 token 时，在锁里重新登录。"""
+        self._require_sync(user_id, system_id)
+        if not force:
+            cached = await self._fresh(user_id, system_id)
+            if cached is not None:
+                return cached
+        return await run_under_token_lock(
+            self.cache,
+            user_id,
+            system_id,
+            self._login_and_store(user_id, system_id, force=force),
+        )
+
+    async def call(
+        self,
+        user_id: int,
+        system_id: int,
+        *,
+        method: str,
+        url: str,
+        headers: Mapping[str, Any] | None = None,
+        params: Mapping[str, Any] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        form: Mapping[str, Any] | None = None,
+        arguments: Mapping[str, Any] | None = None,
+    ) -> httpx.Response:
+        """取 token 后发一次业务请求。401 时删缓存、重新登录一次，再发一次，并返回第二次响应。"""
+        self._require_sync(user_id, system_id)
+        # arguments 即使带了 token、uid 或系统参数，也不能改占位符的值。
+        del arguments
+        token = await self.ensure_token(user_id, system_id)
+        response = await self._send_business(method, url, headers, params, json_body, form, token.access_token)
+        if response.status_code != 401:
+            return response
+        await self.cache.delete(user_id, system_id)
+        token = await self.ensure_token(user_id, system_id, force=True)
+        return await self._send_business(method, url, headers, params, json_body, form, token.access_token)
+
+    async def _login_and_store(self, user_id: int, system_id: int, *, force: bool) -> TokenBundle:
+        if not force:
+            cached = await self._fresh(user_id, system_id)
+            if cached is not None:
+                return cached
+        bundle = await self._login()
+        await self.cache.put(user_id, system_id, bundle)
+        return bundle
+
+    async def _fresh(self, user_id: int, system_id: int) -> TokenBundle | None:
+        bundle = await self.cache.get(user_id, system_id)
+        if bundle is None:
+            return None
+        expires_at = bundle.expires_at if bundle.expires_at.tzinfo is not None else bundle.expires_at.replace(tzinfo=UTC)
+        if expires_at <= datetime.now(UTC):
+            return None
+        return bundle
+
+    def _require_sync(self, user_id: int, system_id: int) -> None:
+        if self.auth.method == "interactive":
+            raise InteractiveAuthRequired("交互式验证不在这里登录")
+        binding = self.binding
+        if binding is None or not binding.enabled or binding.user_id != user_id or binding.system_id != system_id or self.system.id != system_id:
+            raise BindingUnavailable("没有可用的业务绑定")
+
+    async def _login(self) -> TokenBundle:
+        method, url, kwargs = self._login_request()
+        response = await self._request(method, url, **kwargs)
+        return extract_token(body=response.text, headers=dict(response.headers), rule=self.auth.rule or {})
+
+    def _login_request(self) -> tuple[str, str, dict[str, Any]]:
+        url = resolve_url(self.system.base_url, self._render_text(self.auth.url, token=None))
+        if self.auth.method == "fixed":
+            binding = self._binding()
+            return "POST", url, {"json": {self.system.uid_field: binding.uid_value}}
+
+        kwargs: dict[str, Any] = {}
+        query = self._section("query")
+        body = self._section("json")
+        form = self._section("form")
+        if query is not None:
+            kwargs["params"] = self._render_mapping(query, token=None)
+        if form is not None:
+            kwargs["data"] = self._render_mapping(form, token=None)
+        elif body is not None:
+            kwargs["json"] = self._render_value(body, token=None)
+        if self.auth.method == "basic":
+            kwargs["auth"] = httpx.BasicAuth(self.auth.username or "", self.auth.password or "")
+        http_method = str(self.auth.http_method or "GET").upper()
+        return http_method, url, kwargs
+
+    async def _send_business(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, Any] | None,
+        params: Mapping[str, Any] | None,
+        json_body: Mapping[str, Any] | None,
+        form: Mapping[str, Any] | None,
+        token: str,
+    ) -> httpx.Response:
+        target = resolve_url(self.system.base_url, self._render_text(url, token=token))
+        kwargs: dict[str, Any] = {}
+        if headers is not None:
+            kwargs["headers"] = self._render_mapping(headers, token=token)
+        if params is not None:
+            kwargs["params"] = self._render_mapping(params, token=token)
+        if form is not None:
+            kwargs["data"] = self._render_mapping(form, token=token)
+        elif json_body is not None:
+            kwargs["json"] = self._render_value(json_body, token=token)
+        return await self._request(method, target, **kwargs)
+
+    async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        async with httpx.AsyncClient(transport=self.transport, trust_env=False) as client:
+            response = await client.request(method, url, **kwargs)
+            await response.aread()
+            return response
+
+    def _section(self, name: str) -> Mapping[str, Any] | None:
+        raw = (self.auth.rule or {}).get(name)
+        if isinstance(raw, Mapping):
+            return raw
+        return None
+
+    def _binding(self) -> BizBindingModel:
+        if self.binding is None:
+            raise BindingUnavailable("没有可用的业务绑定")
+        return self.binding
+
+    def _render_mapping(self, value: Mapping[str, Any], *, token: str | None) -> dict[str, str]:
+        rendered = self._render_value(dict(value), token=token)
+        return {str(key): _as_text(item) for key, item in rendered.items()}
+
+    def _render_value(self, value: Any, *, token: str | None) -> Any:
+        if isinstance(value, str):
+            return self._render_text(value, token=token)
+        if isinstance(value, Mapping):
+            return {str(key): self._render_value(item, token=token) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._render_value(item, token=token) for item in value]
+        return value
+
+    def _render_text(self, value: str, *, token: str | None) -> str:
+        return _PLACEHOLDER.sub(lambda match: self._replace(match, token), value)
+
+    def _replace(self, match: re.Match[str], token: str | None) -> str:
+        system_key = match.group("system")
+        if system_key is not None:
+            params = self.system.params or {}
+            if system_key not in params:
+                return match.group(0)
+            return _as_text(params[system_key])
+        attr_key = match.group("attr")
+        if attr_key is not None:
+            allowed = {str(name) for name in (self.system.attr_fields or [])}
+            attrs = self.binding.attrs if self.binding is not None else {}
+            if attr_key not in allowed or attr_key not in (attrs or {}):
+                return match.group(0)
+            return _as_text(attrs[attr_key])
+        if match.group(0) == "{{user.uid}}":
+            if self.binding is None:
+                return match.group(0)
+            return str(self.binding.uid_value)
+        if match.group(0) == "{{token}}":
+            if token is None:
+                return match.group(0)
+            return token
+        return match.group(0)
+
+
+def _as_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
