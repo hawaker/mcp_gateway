@@ -8,6 +8,7 @@ from app.modules.generator.gencode.controller import GenRouter
 from app.modules.mcp_gateway.auth.controller import BizAuthRouter
 from app.modules.mcp_gateway.auth.interactive_controller import InteractiveAuthRouter
 from app.modules.mcp_gateway.binding.controller import BizBindingRouter
+from app.modules.mcp_gateway.call_log.controller import CallLogRouter
 from app.modules.mcp_gateway.mcp_group.controller import McpGroupRouter
 from app.modules.mcp_gateway.rest_tool.controller import RestToolRouter
 from app.modules.mcp_gateway.system.controller import BizSystemRouter
@@ -81,6 +82,7 @@ DOMAIN_CONTROLLERS: dict[str, list[APIRouter]] = {
         RestToolRouter,
         UpstreamRouter,
         McpGroupRouter,
+        CallLogRouter,
     ],
 }
 

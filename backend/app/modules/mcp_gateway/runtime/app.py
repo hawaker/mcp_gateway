@@ -1,8 +1,9 @@
-"""把 MCP 组暴露成 Streamable HTTP 和 SSE。不写调用日志，也不签发 token。"""
+"""把 MCP 组暴露成 Streamable HTTP 和 SSE。tools/call 写一行调用日志，不签发 token。"""
 
 import copy
 import json
 import secrets
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from starlette.routing import Route
 
 from app.core.base_schema import AuthSchema
 from app.modules.mcp_gateway.auth.client import BindingUnavailable
+from app.modules.mcp_gateway.call_log.service import CallLogService
+from app.modules.mcp_gateway.mcp_group.crud import McpGroupToolCRUD
 from app.modules.mcp_gateway.mcp_group.service import McpGroupService
 from app.modules.mcp_gateway.rest_tool.crud import RestToolCRUD
 from app.modules.mcp_gateway.rest_tool.service import RestToolService
@@ -42,6 +45,7 @@ class _RestCall:
     tool_id: int
     user_id: int
     arguments: dict[str, Any]
+    system_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +55,21 @@ class _UpstreamCall:
     tools: list[Any]
     external_name: str
     arguments: dict[str, Any]
+    system_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CallFact:
+    user_id: int
+    group_id: int
+    tool_name: str
+    system_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Performed:
+    text: str
+    http_status: int | None
 
 
 def build_mcp_app(
@@ -186,18 +205,27 @@ class McpRuntime:
         params = message.get("params")
         if not isinstance(params, dict):
             params = {}
+        started = time.perf_counter()
+        plan: _Ready | _RestCall | _UpstreamCall | None = None
+        fact: _CallFact | None = None
         try:
             async with self._db() as db:
                 user_id = await self._authenticate(db, request, group_id)
                 if isinstance(method, str) and method.startswith("notifications/"):
                     return _empty(202)
                 plan = await self._plan(db, user_id, group_id, method, rpc_id, params)
+                fact = await self._call_fact(db, user_id, group_id, method, params, plan)
+                if isinstance(plan, _Ready):
+                    await self._record(db, fact, None, False, started)
+                    return plan.payload
         except CredentialRejected as exc:
             return _unauthorized(exc)
-        if isinstance(plan, _Ready):
-            return plan.payload
-        text = await self._perform(request, plan)
-        return _text_result(rpc_id, text, is_error=text == _DENIED)
+        if not isinstance(plan, _RestCall | _UpstreamCall):
+            raise RuntimeError("tools/call 没有可执行的计划")
+        performed = await self._perform(request, plan)
+        async with self._db() as db:
+            await self._record(db, fact, performed.http_status, _succeeded(performed.http_status), started)
+        return _text_result(rpc_id, performed.text, is_error=performed.text == _DENIED)
 
     async def _plan(
         self,
@@ -267,7 +295,7 @@ class McpRuntime:
             tool = await RestToolCRUD(AuthSchema(), db).get(id=match.source_id)
             if tool is None or not tool.enabled:
                 return _Ready(_text_result(rpc_id, _DENIED, is_error=True))
-            return _RestCall(tool_id=tool.id, user_id=user_id, arguments=arguments)
+            return _RestCall(tool_id=tool.id, user_id=user_id, arguments=arguments, system_id=tool.system_id)
         if match.source == "upstream":
             loaded = await self._load_upstream(db, match.source_id, arguments)
             if loaded is None:
@@ -293,18 +321,81 @@ class McpRuntime:
             tools=[_snapshot(row) for row in rows],
             external_name=tool.external_name,
             arguments=arguments,
+            system_id=upstream.system_id,
         )
 
-    async def _perform(self, request: Request, plan: _RestCall | _UpstreamCall) -> str:
+    async def _call_fact(
+        self,
+        db: Any,
+        user_id: int,
+        group_id: int,
+        method: Any,
+        params: dict[str, Any],
+        plan: _Ready | _RestCall | _UpstreamCall,
+    ) -> _CallFact | None:
+        if method != "tools/call":
+            return None
+        name = str(params.get("name") or "")
+        if isinstance(plan, _RestCall | _UpstreamCall):
+            system_id: int | None = plan.system_id
+        else:
+            system_id = await self._owner_system_id(db, group_id, name)
+        return _CallFact(user_id=user_id, group_id=group_id, tool_name=name, system_id=system_id)
+
+    async def _owner_system_id(self, db: Any, group_id: int, name: str) -> int | None:
+        if not name:
+            return None
+        auth = AuthSchema()
+        rows = await McpGroupToolCRUD(auth, db).get_list(search={"group_id": group_id, "external_name": name})
+        if not rows:
+            return None
+        row = rows[0]
+        if row.source == "rest":
+            tool = await RestToolCRUD(auth, db).get(id=row.source_id)
+            if tool is None:
+                return None
+            return tool.system_id
+        if row.source != "upstream":
+            return None
+        tool = await UpstreamToolCRUD(auth, db).get(id=row.source_id)
+        if tool is None:
+            return None
+        upstream = await UpstreamMcpCRUD(auth, db).get(id=tool.upstream_id)
+        if upstream is None:
+            return None
+        return upstream.system_id
+
+    async def _record(
+        self,
+        db: Any,
+        fact: _CallFact | None,
+        http_status: int | None,
+        ok: bool,
+        started: float,
+    ) -> None:
+        if fact is None:
+            return
+        elapsed_ms = max(0, int((time.perf_counter() - started) * 1000))
+        await CallLogService(AuthSchema(), db).write(
+            fact.user_id,
+            fact.group_id,
+            fact.tool_name,
+            fact.system_id,
+            elapsed_ms,
+            ok,
+            http_status,
+        )
+
+    async def _perform(self, request: Request, plan: _RestCall | _UpstreamCall) -> _Performed:
         if isinstance(plan, _RestCall):
             service = RestToolService(AuthSchema(), self.db, self._redis(request), transport=self.transport)
             try:
                 result = await service.invoke(plan.tool_id, plan.user_id, plan.arguments)
             except BindingUnavailable:
-                return _DENIED
+                return _Performed(_DENIED, None)
             if result.link:
-                return result.link
-            return _render_body(result.body)
+                return _Performed(result.link, None)
+            return _Performed(_render_body(result.body), result.status)
         client = UpstreamClient(
             upstream=plan.upstream,
             system_code=plan.system_code,
@@ -312,7 +403,8 @@ class McpRuntime:
             transport=self.transport,
         )
         result = await client.call(plan.upstream.id, plan.external_name, dict(plan.arguments))
-        return json.dumps({"status": result.status, "body": result.body}, ensure_ascii=False)
+        text = json.dumps({"status": result.status, "body": result.body}, ensure_ascii=False)
+        return _Performed(text, result.status)
 
     async def _authenticate(self, db: Any, request: Request, group_id: int) -> int:
         user_id, token_group_id = await verify_bearer(db, request.headers.get("authorization"))
@@ -358,6 +450,10 @@ def _json(content: dict[str, Any], status: int) -> JSONResponse:
 
 def _empty(status: int) -> Response:
     return Response(None, status)
+
+
+def _succeeded(status: int | None) -> bool:
+    return status is not None and 200 <= status < 300
 
 
 def _denied(rpc_id: Any) -> dict[str, Any]:

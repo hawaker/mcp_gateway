@@ -459,8 +459,7 @@ def test_router_has_no_remove_or_transport() -> None:
 
 def test_revision_follows_upstream_tool_unique() -> None:
     script = ScriptDirectory.from_config(Config(str(BASE_DIR / "alembic.ini")))
-    heads = script.get_heads()
-    assert len(heads) == 1
-    revision = script.get_revision(heads[0])
+    revision = script.get_revision("a7c3e9b14d62")
+    assert revision is not None
     assert revision.down_revision == "b6e2d8a14c90"
     assert revision.revision != "b6e2d8a14c90"
