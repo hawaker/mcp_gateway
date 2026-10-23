@@ -406,3 +406,35 @@ async def test_expired_cache_is_not_reused() -> None:
     fresh = await client.ensure_token(USER_ID, SYSTEM_ID)
     assert fresh.access_token == "new"
     assert len(upstream.logins) == 1
+
+
+class _CloseCountingTransport(httpx.MockTransport):
+    """aclose 计数。每次请求都关掉 transport 时，这个数会增加。"""
+
+    def __init__(self, handler: Any) -> None:
+        super().__init__(handler)
+        self.closes = 0
+
+    async def aclose(self) -> None:
+        self.closes += 1
+
+
+async def test_calls_leave_the_injected_transport_open() -> None:
+    redis = ExpiringRedis()
+    upstream = _Upstream(redis, [200, 200])
+    transport = _CloseCountingTransport(upstream.handler)
+    client, _cache = _client(transport, redis)
+
+    first = await client.call(USER_ID, SYSTEM_ID, **_business_call())
+    second = await client.call(USER_ID, SYSTEM_ID, **_business_call())
+
+    assert first.status_code == 200
+    assert first.text == "biz-1"
+    assert second.status_code == 200
+    assert second.text == "biz-2"
+    assert len(upstream.logins) == 1
+    assert len(upstream.business) == 2
+    assert transport.closes == 0
+
+    await client.aclose()
+    assert transport.closes == 0

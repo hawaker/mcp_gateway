@@ -29,6 +29,19 @@ class InteractiveAuthRequired(Exception):
     """交互式验证不在这里登录，也不会发出业务请求。"""
 
 
+class _BorrowedTransport(httpx.AsyncBaseTransport):
+    """转发请求。关闭这一层时不关闭注入的 transport。"""
+
+    def __init__(self, transport: httpx.AsyncBaseTransport) -> None:
+        self._transport = transport
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return await self._transport.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        """连接池属于调用方。这里不调用注入 transport 的 aclose。"""
+
+
 class AuthClient:
     """按 fixed、custom、basic 取 token，并带上 token 调用一次业务接口。"""
 
@@ -46,6 +59,12 @@ class AuthClient:
         self.binding = binding
         self.auth = auth
         self.transport = transport
+        # 一个客户端用到底。请求结束不能关掉注入的连接池。
+        self._http = httpx.AsyncClient(transport=_BorrowedTransport(transport), trust_env=False)
+
+    async def aclose(self) -> None:
+        """关闭自己的 AsyncClient。不关闭注入的 transport。"""
+        await self._http.aclose()
 
     async def ensure_token(self, user_id: int, system_id: int, *, force: bool = False) -> TokenBundle:
         """返回未过期缓存。force 为真，或缓存没有可用 token 时，在锁里重新登录。"""
@@ -160,10 +179,11 @@ class AuthClient:
         return await self._request(method, target, **kwargs)
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
-        async with httpx.AsyncClient(transport=self.transport, trust_env=False) as client:
-            response = await client.request(method, url, **kwargs)
-            await response.aread()
-            return response
+        response = await self._http.request(method, url, **kwargs)
+        await response.aread()
+        # 长生命周期客户端会记住 Set-Cookie。清掉后，登录和业务请求仍然各发各的。
+        self._http.cookies.clear()
+        return response
 
     def _section(self, name: str) -> Mapping[str, Any] | None:
         raw = (self.auth.rule or {}).get(name)
