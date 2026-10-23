@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.modules.ai.chat.controller import ChatRouter
 from app.modules.common.file.controller import FileRouter
 from app.modules.generator.gencode.controller import GenRouter
+from app.modules.mcp_gateway.auth.controller import BizAuthRouter
 from app.modules.mcp_gateway.binding.controller import BizBindingRouter
 from app.modules.mcp_gateway.system.controller import BizSystemRouter
 from app.modules.mcp_gateway.user.controller import BizUserGroupRouter, BizUserRouter
@@ -69,6 +70,7 @@ DOMAIN_CONTROLLERS: dict[str, list[APIRouter]] = {
         BizUserGroupRouter,
         BizSystemRouter,
         BizBindingRouter,
+        BizAuthRouter,
     ],
 }
 
