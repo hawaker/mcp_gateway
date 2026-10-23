@@ -170,11 +170,12 @@ async def test_link_ttl_is_ten_minutes_and_stores_only_the_two_ids(cache: TokenC
     assert not link.startswith("/api/v1")
 
 
-async def test_missing_or_other_user_cannot_open_or_fill_the_cache(client: httpx.AsyncClient, cache: TokenCache) -> None:
+async def test_mismatched_header_is_forbidden_and_a_browser_can_open(client: httpx.AsyncClient, cache: TokenCache) -> None:
     link = await start_for(user_id=1, system_id=10)
 
     missing = await client.get(link)
-    assert missing.status_code == 403
+    assert missing.status_code == 200
+    assert "https://oa.example.com/verify" in missing.text
     mismatch = await client.get(link, headers={"X-Test-User": "abc"})
     assert mismatch.status_code == 403
     owner = await client.get(link, headers={"X-Test-User": "1"})
@@ -182,6 +183,22 @@ async def test_missing_or_other_user_cannot_open_or_fill_the_cache(client: httpx
     assert "https://oa.example.com/verify" in owner.text
     assert await cache.get(1, 10) is None
     assert f"mcp:auth-link:{_nonce(link)}" in cache.redis.values
+
+
+async def test_callback_without_test_user_writes_the_cache(client: httpx.AsyncClient, cache: TokenCache) -> None:
+    link = await start_for(user_id=1, system_id=10)
+    response = await client.get(
+        "/mcp-gateway/auth/interactive/callback",
+        params={"nonce": _nonce(link)},
+        headers={"X-Token": "Bearer browser-secret", "X-Expires-In": "120"},
+    )
+    assert response.status_code == 200
+    assert "browser-secret" not in response.text
+    for value in response.headers.values():
+        assert "browser-secret" not in value
+    bundle = await cache.get(1, 10)
+    assert bundle is not None
+    assert bundle.access_token == "browser-secret"
 
 
 async def test_callback_route_is_not_captured_as_a_nonce(client: httpx.AsyncClient, cache: TokenCache) -> None:

@@ -28,7 +28,7 @@ def _html(message: str, status_code: int, *, verify_url: str | None = None) -> H
 
 
 def _opener(request: Request) -> str | None:
-    """样本测试用 X-Test-User 表示打开链接的人。缺了就当不是这条链接的用户。"""
+    """样本测试用 X-Test-User 表示打开链接的人。浏览器和 OA 回调不会带这个头。"""
     raw = request.headers.get("X-Test-User")
     if raw is None:
         return None
@@ -37,6 +37,9 @@ def _opener(request: Request) -> str | None:
 
 
 def _owns(opener: str | None, user_id: int) -> bool:
+    """头缺失时，不可猜测的 nonce 就是凭证。头在且对不上才拒绝。"""
+    if opener is None:
+        return True
     return opener == str(user_id)
 
 
