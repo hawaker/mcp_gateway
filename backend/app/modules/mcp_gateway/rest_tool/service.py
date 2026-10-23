@@ -3,6 +3,7 @@
 调试不插入工具，也不写调用日志。上游 HTTP 走 AuthClient.call。
 """
 
+import copy
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -64,6 +65,17 @@ class _Call:
     text: str
     request: httpx.Request
     secret: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedInvoke:
+    """数据库已经读完。后面的 HTTP 只用这些副本。"""
+
+    tool: dict[str, Any]
+    system: BizSystemModel
+    binding: BizBindingModel | None
+    auth_config: AuthConfigModel
+    cache: TokenCache
 
 
 class RestToolService:
@@ -153,16 +165,47 @@ class RestToolService:
         return RestToolDebugResultSchema(status=called.status, request=request_view, response=body)
 
     async def invoke(self, tool_id: int, user_id: int, arguments: Mapping[str, Any] | None = None) -> UpstreamResult:
-        """正式调用已保存的工具。请求组装与调试相同。这里不写调用日志。"""
+        """正式调用已保存的工具。请求组装与调试相同。这里不写调用日志。
+
+        工具、系统和鉴权先读完并复制出来。出站 HTTP 不再占用这次数据库事务。
+        """
+        prepared = await self._prepare_invoke(tool_id, user_id)
+        direct = RestToolService(
+            system=prepared.system,
+            binding=prepared.binding,
+            auth_config=prepared.auth_config,
+            cache=prepared.cache,
+            transport=self.transport,
+        )
+        try:
+            called = await direct._execute(prepared.tool, user_id, arguments or {})
+        except InteractiveAuthRequired as exc:
+            return UpstreamResult(link=exc.link)
+        body = apply_jsonpath(_decode_body(called.text), prepared.tool.get("jsonpath_filter"))
+        return UpstreamResult(status=called.status, body=body)
+
+    async def _prepare_invoke(self, tool_id: int, user_id: int) -> _PreparedInvoke:
+        if self.db is not None:
+            return await self._load_invoke(tool_id, user_id)
+        from app.core.database import async_db_session
+
+        async with async_db_session() as session, session.begin():
+            loader = RestToolService(self.auth, session, self.redis, transport=self.transport)
+            return await loader._load_invoke(tool_id, user_id)
+
+    async def _load_invoke(self, tool_id: int, user_id: int) -> _PreparedInvoke:
         tool = await self._crud().get(id=tool_id)
         if tool is None or not tool.enabled:
             raise CustomException(msg="REST 工具不存在或已停用")
-        try:
-            called = await self._execute(tool, user_id, arguments or {})
-        except InteractiveAuthRequired as exc:
-            return UpstreamResult(link=exc.link)
-        body = apply_jsonpath(_decode_body(called.text), tool.jsonpath_filter)
-        return UpstreamResult(status=called.status, body=body)
+        data = _tool_dict(tool)
+        system, binding, auth_config, cache = await self._context(data, user_id)
+        return _PreparedInvoke(
+            tool=data,
+            system=_snapshot(system),
+            binding=_snapshot(binding) if binding is not None else None,
+            auth_config=_snapshot(auth_config),
+            cache=cache,
+        )
 
     async def _execute(self, tool: Mapping[str, Any] | RestToolModel, user_id: int, arguments: Mapping[str, Any]) -> _Call:
         data = _tool_dict(tool)
@@ -289,6 +332,17 @@ def _mask_query(query: str, secret: str, encoded: str) -> str:
 
 def _quote_masked(value: str, safe: str = "", encoding: str | None = None, errors: str | None = None) -> str:
     return quote(value, safe=f"{safe}*", encoding=encoding, errors=errors)
+
+
+def _snapshot(row: Any) -> Any:
+    """复制成不挂在会话上的实例。提交或关闭会话后，出站请求仍能读这些字段。"""
+    values: dict[str, Any] = {}
+    for column in row.__table__.columns:
+        value = getattr(row, column.key)
+        if isinstance(value, dict | list):
+            value = copy.deepcopy(value)
+        values[column.key] = value
+    return type(row)(**values)
 
 
 def _tool_dict(tool: Mapping[str, Any] | RestToolCreateSchema | RestToolModel) -> dict[str, Any]:

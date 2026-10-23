@@ -3,9 +3,13 @@
 测试驱动 build_mcp_app，走真实的 invoke 和上游转发。业务 HTTP 停在 MockTransport，不访问真实 OA。
 """
 
+import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -30,7 +34,7 @@ from app.modules.mcp_gateway.system.model import BizSystemModel
 from app.modules.mcp_gateway.upstream.model import UpstreamMcpModel, UpstreamToolModel
 from app.modules.mcp_gateway.user.model import BizUserGroupMemberModel, BizUserGroupModel, BizUserModel
 from app.utils.crypto_util import CryptoUtil
-from tests.mcp_gateway.test_token_cache import ExpiringRedis
+from tests.mcp_gateway.test_token_cache import ExpiringRedis, _as_text
 
 _TOKEN_RULE = {
     "token_from": "json",
@@ -586,8 +590,170 @@ async def test_business_group_member_is_allowed_until_that_group_is_disabled(db)
     assert gateway.requests == []
 
 
-async def test_sse_message_post_reads_session_from_redis(db) -> None:
-    """GET 把会话写入 Redis。另一边只靠写入 mcp:sse:{session_id} 就能完成 tools/list。"""
+class _PubSub:
+    """内存版订阅。POST 在另一个实例上 publish，挂着 GET 的实例从这里拿到消息。"""
+
+    def __init__(self, redis: "StreamingRedis") -> None:
+        self.redis = redis
+        self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.channels: set[str] = set()
+
+    async def subscribe(self, *channels: Any) -> None:
+        for channel in channels:
+            name = _as_text(channel)
+            self.channels.add(name)
+            self.redis.subscribers.setdefault(name, []).append(self.queue)
+
+    async def unsubscribe(self, *channels: Any) -> None:
+        names = [_as_text(channel) for channel in channels] or list(self.channels)
+        for name in names:
+            queues = self.redis.subscribers.get(name, [])
+            if self.queue in queues:
+                queues.remove(self.queue)
+            self.channels.discard(name)
+
+    async def get_message(self, ignore_subscribe_messages: bool = False, timeout: float | None = 0.0) -> dict[str, Any] | None:
+        del ignore_subscribe_messages
+        if timeout is None:
+            return await self.queue.get()
+        try:
+            return await asyncio.wait_for(self.queue.get(), timeout or 0)
+        except TimeoutError:
+            return None
+
+    async def aclose(self) -> None:
+        await self.unsubscribe()
+
+
+class StreamingRedis(ExpiringRedis):
+    """在会过期的内存 Redis 上补上 publish 和 expire。TTL 断言读这些调用。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = {}
+        self.expire = AsyncMock(side_effect=self._expire)
+        self.publish = AsyncMock(side_effect=self._publish)
+
+    def pubsub(self) -> _PubSub:
+        return _PubSub(self)
+
+    async def _expire(self, name: Any, seconds: int, **kwargs: Any) -> bool:
+        del kwargs
+        key = _as_text(name)
+        self._drop_if_expired(key)
+        item = self._data.get(key)
+        if item is None:
+            return False
+        self._data[key] = (item[0], time.monotonic() + float(seconds))
+        return True
+
+    async def _publish(self, channel: Any, message: Any) -> int:
+        name = _as_text(channel)
+        payload = message.decode() if isinstance(message, bytes) else str(message)
+        queues = list(self.subscribers.get(name, []))
+        for queue in queues:
+            await queue.put({"type": "message", "pattern": None, "channel": name, "data": payload})
+        return len(queues)
+
+
+class _OpenSse:
+    """按块读取 SSE。httpx 的 ASGI 传输会把整段 body 攒齐才返回，长连接不能用它。"""
+
+    def __init__(self, app: Any, path: str, token: str) -> None:
+        self.app = app
+        self.path = path
+        self.token = token
+        self.status = 0
+        self.headers: dict[str, str] = {}
+        self._started = asyncio.Event()
+        self._disconnect = asyncio.Event()
+        self._saw_request = False
+        self._chunks: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._buffer = ""
+        self._task = asyncio.create_task(self._run())
+
+    async def wait_started(self) -> None:
+        await asyncio.wait_for(self._started.wait(), timeout=5)
+        if self._task.done():
+            error = self._task.exception()
+            if error is not None:
+                raise error
+
+    async def next_event(self) -> tuple[str, str]:
+        while "\n\n" not in self._buffer:
+            chunk = await asyncio.wait_for(self._chunks.get(), timeout=5)
+            if chunk is None:
+                raise AssertionError("SSE stream closed before the next event")
+            self._buffer += chunk.decode()
+        raw, self._buffer = self._buffer.split("\n\n", 1)
+        event = "message"
+        data: list[str] = []
+        for line in raw.split("\n"):
+            if line.startswith("event:"):
+                event = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data.append(line.split(":", 1)[1].lstrip())
+        return event, "\n".join(data)
+
+    async def aclose(self) -> None:
+        self._disconnect.set()
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
+    async def _run(self) -> None:
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": self.path,
+            "raw_path": self.path.encode(),
+            "query_string": b"",
+            "headers": [
+                (b"authorization", f"Bearer {self.token}".encode()),
+                (b"accept", b"text/event-stream"),
+                (b"host", b"mcp.test"),
+            ],
+            "client": ("127.0.0.1", 50000),
+            "server": ("mcp.test", 80),
+            "root_path": "",
+        }
+        await self.app(scope, self._receive, self._send)
+
+    async def _receive(self) -> dict[str, Any]:
+        if not self._saw_request:
+            self._saw_request = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await self._disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def _send(self, message: dict[str, Any]) -> None:
+        if message["type"] == "http.response.start":
+            self.status = int(message["status"])
+            self.headers = {key.decode().lower(): value.decode() for key, value in message.get("headers", [])}
+            self._started.set()
+            return
+        if message["type"] != "http.response.body":
+            return
+        body = message.get("body", b"")
+        if body:
+            await self._chunks.put(body)
+        if not message.get("more_body", False):
+            await self._chunks.put(None)
+
+
+def _session_sets(redis: StreamingRedis) -> list[Any]:
+    return [call for call in redis.set.await_args_list if str(call.args[0]).startswith("mcp:sse:")]
+
+
+async def test_sse_result_arrives_on_the_other_instances_get_stream(db) -> None:
+    """第一个实例收 POST，第二个实例挂着 GET。tools/list 出现在 GET 的 message 事件里。"""
     user = await _user(db)
     system = await _system(db, "oa_sse", base_url="https://oa.example.com")
     tool = await _rest(db, system.id, "search", jsonpath_filter=None)
@@ -595,42 +761,65 @@ async def test_sse_message_post_reads_session_from_redis(db) -> None:
     token = await _member(db, group.id, user.id)
     await _publish_rest(db, group.id, tool.id, "search")
     gateway = _Gateway()
-    redis = ExpiringRedis()
+    redis = StreamingRedis()
+    transport = httpx.MockTransport(gateway.handler)
+    first = build_mcp_app(group.id, db=db, redis=redis, transport=transport)
+    second = build_mcp_app(group.id, db=db, redis=redis, transport=transport)
+    stream = _OpenSse(second, f"/mcp/{group.id}/sse", token)
 
-    async with _client(group.id, db, redis, httpx.MockTransport(gateway.handler)) as client:
-        opened = await client.get(f"/mcp/{group.id}/sse", headers=_headers(token))
-        streamable = await client.get(f"/mcp/{group.id}", headers=_headers(token))
+    try:
+        await stream.wait_started()
+        assert stream.status == 200
+        assert "text/event-stream" in stream.headers["content-type"]
+        event, endpoint = await stream.next_event()
+        assert event == "endpoint"
+        marker = f"/mcp/{group.id}/messages?session_id="
+        assert endpoint.startswith(marker)
+        session_id = endpoint.removeprefix(marker).strip()
+        stored = await redis.get(f"mcp:sse:{session_id}")
+        assert stored is not None
+        assert json.loads(stored)["group_id"] == group.id
 
-    assert opened.status_code == 200
-    assert "text/event-stream" in opened.headers["content-type"]
-    marker = f"/mcp/{group.id}/messages?session_id="
-    assert marker in opened.text
-    opened_id = opened.text.split("session_id=", 1)[1].split()[0].strip()
-    stored = await redis.get(f"mcp:sse:{opened_id}")
-    assert stored is not None
-    assert json.loads(stored)["group_id"] == group.id
-    assert streamable.status_code == 200
-    assert "text/event-stream" in streamable.headers["content-type"]
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=first), base_url="http://mcp.test") as poster:
+            listed = await poster.post(endpoint, headers=_headers(token), json=_rpc("tools/list"))
+            assert listed.status_code == 202
+            assert listed.content == b""
+            assert "search" not in listed.text
+            message_event, message_data = await stream.next_event()
+            assert message_event == "message"
+            payload = json.loads(message_data)
+            assert payload["jsonrpc"] == "2.0"
+            assert payload["id"] == 1
+            assert [item["name"] for item in payload["result"]["tools"]] == ["search"]
+            missing = await poster.post(
+                f"/mcp/{group.id}/messages?session_id=missing-session",
+                headers=_headers(token),
+                json=_rpc("tools/list"),
+            )
 
-    session_id = "from-another-process"
-    await redis.set(f"mcp:sse:{session_id}", json.dumps({"group_id": group.id}))
-    async with _client(group.id, db, redis, httpx.MockTransport(gateway.handler)) as client:
-        listed = await client.post(
-            f"/mcp/{group.id}/messages?session_id={session_id}",
-            headers=_headers(token),
-            json=_rpc("tools/list"),
-        )
-        missing = await client.post(
-            f"/mcp/{group.id}/messages?session_id=missing-session",
-            headers=_headers(token),
-            json=_rpc("tools/list"),
-        )
+        session_sets = _session_sets(redis)
+        assert len(session_sets) == 1
+        ttl = session_sets[0].kwargs["ex"]
+        assert isinstance(ttl, int) and ttl >= 1
+        assert session_sets[0].args[0] == f"mcp:sse:{session_id}"
+        refreshed = [call for call in redis.expire.await_args_list if call.args[0] == f"mcp:sse:{session_id}"]
+        assert refreshed
+        assert all(call.args[1] == ttl for call in refreshed)
+        assert missing.status_code == 404
+        assert "tools" not in missing.text
+        assert gateway.requests == []
+        keys_while_open = await redis.keys("mcp:sse:*")
+    finally:
+        await stream.aclose()
 
-    assert listed.status_code == 200
-    assert _tool_names(listed) == ["search"]
-    assert missing.status_code == 404
-    assert "tools" not in missing.json()
-    assert gateway.requests == []
+    await McpGroupService(_auth(), db).disable_member(group.id, "user", user.id)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=second), base_url="http://mcp.test") as client:
+        denied = await client.get(f"/mcp/{group.id}/sse", headers=_headers(token))
+
+    assert denied.status_code == 200
+    assert denied.json()["error"] == "无权限"
+    assert await redis.keys("mcp:sse:*") == keys_while_open
+    assert len(_session_sets(redis)) == 1
 
 
 async def test_runtime_routes_mount_at_app_root_without_admin_auth() -> None:
