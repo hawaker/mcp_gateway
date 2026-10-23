@@ -106,10 +106,12 @@ class AuthClient:
         json_body: Mapping[str, Any] | None = None,
         form: Mapping[str, Any] | None = None,
         arguments: Mapping[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         """取 token 后发一次业务请求。401 时删缓存、重新登录一次，再发一次，并返回第二次响应。
 
         interactive 遇到 401 只删缓存并给出新链接，不调用 ensure_token(force=True)，也不再请求一次。
+        timeout 只限制业务请求，不限制登录。
         """
         # arguments 即使带了 token、uid 或系统参数，也不能改占位符的值。
         del arguments
@@ -123,15 +125,16 @@ class AuthClient:
                 params=params,
                 json_body=json_body,
                 form=form,
+                timeout=timeout,
             )
         self._require_sync(user_id, system_id)
         token = await self.ensure_token(user_id, system_id)
-        response = await self._send_business(method, url, headers, params, json_body, form, token.access_token)
+        response = await self._send_business(method, url, headers, params, json_body, form, token.access_token, timeout)
         if response.status_code != 401:
             return response
         await self.cache.delete(user_id, system_id)
         token = await self.ensure_token(user_id, system_id, force=True)
-        return await self._send_business(method, url, headers, params, json_body, form, token.access_token)
+        return await self._send_business(method, url, headers, params, json_body, form, token.access_token, timeout)
 
     async def _login_and_store(self, user_id: int, system_id: int, *, force: bool) -> TokenBundle:
         if not force:
@@ -170,12 +173,13 @@ class AuthClient:
         params: Mapping[str, Any] | None,
         json_body: Mapping[str, Any] | None,
         form: Mapping[str, Any] | None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         self._require_binding(user_id, system_id)
         cached = await self._fresh(user_id, system_id)
         if cached is None:
             raise await self._link_required(user_id, system_id)
-        response = await self._send_business(method, url, headers, params, json_body, form, cached.access_token)
+        response = await self._send_business(method, url, headers, params, json_body, form, cached.access_token, timeout)
         if response.status_code != 401:
             return response
         await self.cache.delete(user_id, system_id)
@@ -228,6 +232,7 @@ class AuthClient:
         json_body: Mapping[str, Any] | None,
         form: Mapping[str, Any] | None,
         token: str,
+        timeout: float | None = None,
     ) -> httpx.Response:
         target = resolve_url(self.system.base_url, self._render_text(url, token=token))
         kwargs: dict[str, Any] = {}
@@ -239,6 +244,8 @@ class AuthClient:
             kwargs["data"] = self._render_mapping(form, token=token)
         elif json_body is not None:
             kwargs["json"] = self._render_value(json_body, token=token)
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         return await self._request(method, target, **kwargs)
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
