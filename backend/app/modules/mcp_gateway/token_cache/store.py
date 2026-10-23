@@ -1,6 +1,7 @@
 """按业务用户和业务系统把 TokenBundle 放进 Redis。不访问 OA。"""
 
 import asyncio
+import contextlib
 import json
 import math
 import re
@@ -20,8 +21,28 @@ _TOKEN_KEY = "mcp:biz-token:{user_id}:{system_id}"
 _LOCK_KEY = "mcp:biz-token-lock:{user_id}:{system_id}"
 _TOKEN_KEY_RE = re.compile(r"^mcp:biz-token:(?P<user_id>\d+):(?P<system_id>\d+)$")
 _LOCK_TTL_SECONDS = 30
+_LOCK_RENEW_SECONDS = 10
 _LOCK_WAIT_SECONDS = 10
 _LOCK_POLL_SECONDS = 0.02
+
+# 只在值仍是本次 token 时删除。GET 再 DELETE 会在中间被别人 SET 掉。
+_RELEASE_LOCK_SCRIPT = """
+local token = redis.call('get', KEYS[1])
+if not token or token ~= ARGV[1] then
+    return 0
+end
+redis.call('del', KEYS[1])
+return 1
+"""
+
+# 只给仍属于本次 token 的锁续期，避免把后来者的 TTL 拨长。
+_RENEW_LOCK_SCRIPT = """
+local token = redis.call('get', KEYS[1])
+if not token or token ~= ARGV[1] then
+    return 0
+end
+return redis.call('pexpire', KEYS[1], ARGV[2])
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +63,16 @@ def _token_key(user_id: int, system_id: int) -> str:
 
 def _lock_key(user_id: int, system_id: int) -> str:
     return _LOCK_KEY.format(user_id=user_id, system_id=system_id)
+
+
+def _lock_ttl_ms() -> int:
+    """PX / PEXPIRE 用毫秒。至少 1，避免 Redis 拒绝 0。"""
+    return max(1, int(_LOCK_TTL_SECONDS * 1000))
+
+
+def _lock_renew_seconds() -> float:
+    """续期间隔短于锁寿命，这样上下文还在时键不会先消失。"""
+    return min(float(_LOCK_RENEW_SECONDS), float(_LOCK_TTL_SECONDS) / 3)
 
 
 def _text(value: Any) -> str | None:
@@ -120,24 +151,38 @@ class TokenCache:
 
     @asynccontextmanager
     async def lock(self, user_id: int, system_id: int) -> AsyncIterator[None]:
-        """同一用户同一系统互斥。不同组合互不影响。退出时释放锁。"""
+        """同一用户同一系统互斥。持有期间续期，退出时只删除仍属于本次的锁。"""
         key = _lock_key(user_id, system_id)
         token = uuid.uuid4().hex
         deadline = time.monotonic() + _LOCK_WAIT_SECONDS
         acquired = False
+        renew_task: asyncio.Task[None] | None = None
         try:
             while True:
-                held = await self.redis.set(key, token, ex=_LOCK_TTL_SECONDS, nx=True)
+                held = await self.redis.set(key, token, nx=True, px=_lock_ttl_ms())
                 if held:
                     acquired = True
                     break
                 if time.monotonic() >= deadline:
                     raise TimeoutError("等待业务 token 锁超时")
                 await asyncio.sleep(_LOCK_POLL_SECONDS)
+            renew_task = asyncio.create_task(self._renew_lock(key, token))
             yield
         finally:
-            if acquired and _text(await self.redis.get(key)) == token:
-                await self.redis.delete(key)
+            try:
+                if renew_task is not None:
+                    renew_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await renew_task
+            finally:
+                if acquired:
+                    await self.redis.eval(_RELEASE_LOCK_SCRIPT, 1, key, token)
+
+    async def _renew_lock(self, key: str, token: str) -> None:
+        """在 TTL 耗尽前把本次持有者的锁拨回完整寿命。丢失所有权后不再改键。"""
+        while True:
+            await asyncio.sleep(_lock_renew_seconds())
+            await self.redis.eval(_RENEW_LOCK_SCRIPT, 1, key, token, _lock_ttl_ms())
 
     async def list_entries(self, user_id: int | None = None, system_id: int | None = None) -> list[CachedBizToken]:
         """列出 mcp:biz-token:*。两个 id 都给出时只读那一把键。没有则空列表。"""
