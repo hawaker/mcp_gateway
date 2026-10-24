@@ -8,7 +8,9 @@ import pytest
 from sqlalchemy import select
 
 from app.core.base_schema import AuthSchema
+from app.core.exceptions import CustomException
 from app.modules.mcp_gateway.call_log.model import CallLogModel
+from app.modules.mcp_gateway.mcp_group.model import McpCredentialModel
 from app.modules.mcp_gateway.upstream.model import UpstreamMcpModel, UpstreamToolModel
 from app.utils.crypto_util import CryptoUtil
 from tests.mcp_gateway.test_runtime import (
@@ -318,3 +320,101 @@ async def test_group_debug_sse_lists_tools(db) -> None:
     assert [item["name"] for item in listed.tools] == ["list_todos"]
     assert token not in _blob(listed.network)
     assert await _rows(db) == []
+
+
+async def test_upstream_debug_can_call_unselected_listed_tool(db) -> None:
+    """上游调试可调用远端已列出但本地未 selected 的工具，且不写调用日志。"""
+    system = await _system(db, "oa_up_unsel", base_url="https://oa.example.com")
+    upstream = await _upstream_row(db, system.id)
+    await _add(
+        db,
+        UpstreamToolModel(
+            upstream_id=upstream.id,
+            remote_name="draft_notes",
+            external_name="oa_up_unsel_draft_notes",
+            input_schema={"type": "object"},
+            selected=False,
+            is_deleted=False,
+        ),
+    )
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("x-api-key") == _UPSTREAM_SECRET
+        body = json.loads(request.content.decode())
+        method = body.get("method")
+        calls.append(method)
+        if method == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body.get("id"),
+                    "result": {
+                        "tools": [
+                            {"name": "draft_notes", "inputSchema": {"type": "object"}},
+                            {"name": "search_docs", "inputSchema": {"type": "object"}},
+                        ]
+                    },
+                },
+            )
+        if method == "tools/call":
+            assert body["params"]["name"] == "draft_notes"
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body.get("id"),
+                    "result": {"content": [{"type": "text", "text": "drafted"}]},
+                },
+            )
+        return httpx.Response(500, text=f"unexpected {method}")
+
+    service = _service(db, ExpiringRedis(), httpx.MockTransport(handler))
+    listed = await service.tools_list(target="upstream", upstream_id=upstream.id)
+    assert "draft_notes" in [item["name"] for item in listed.tools]
+
+    called = await service.tools_call(
+        target="upstream",
+        upstream_id=upstream.id,
+        name="draft_notes",
+        arguments={},
+    )
+    assert called.result_text == "drafted"
+    assert "tools/call" in calls
+    assert await _rows(db) == []
+
+
+async def test_group_debug_connect_requires_existing_credential(db) -> None:
+    """无 MCP 凭证的业务用户不能通过调试 Connect 签发新凭证。"""
+    user = await _user(db, "李四")
+    group = await _mcp_group(db, "研发")
+    before = (
+        await db.execute(
+            select(McpCredentialModel).where(
+                McpCredentialModel.user_id == user.id,
+                McpCredentialModel.group_id == group.id,
+            )
+        )
+    ).scalars().all()
+    assert before == []
+
+    service = _service(db, ExpiringRedis(), httpx.MockTransport(lambda _: httpx.Response(500)))
+    with pytest.raises(CustomException) as exc_info:
+        await service.session(
+            target="group",
+            group_id=group.id,
+            user_id=user.id,
+            transport="streamable_http",
+        )
+    assert "凭证不存在" in str(exc_info.value.msg)
+
+    after = (
+        await db.execute(
+            select(McpCredentialModel).where(
+                McpCredentialModel.user_id == user.id,
+                McpCredentialModel.group_id == group.id,
+            )
+        )
+    ).scalars().all()
+    assert after == []

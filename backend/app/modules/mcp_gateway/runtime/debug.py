@@ -17,8 +17,8 @@ from app.core.base_schema import AuthSchema
 from app.core.exceptions import CustomException
 from app.modules.mcp_gateway.mcp_group.service import McpCredentialService
 from app.modules.mcp_gateway.token_cache.store import TokenCache
-from app.modules.mcp_gateway.upstream.client import UpstreamClient, require_http_url
-from app.modules.mcp_gateway.upstream.crud import UpstreamMcpCRUD, UpstreamToolCRUD
+from app.modules.mcp_gateway.upstream.client import require_http_url
+from app.modules.mcp_gateway.upstream.crud import UpstreamMcpCRUD
 from app.modules.mcp_gateway.upstream.model import UpstreamMcpModel
 from app.utils.crypto_util import CryptoUtil
 
@@ -218,7 +218,10 @@ class DebugService:
         method: str,
         params: dict[str, Any],
     ) -> _Exchange:
-        token = await McpCredentialService(self.auth, self.db).issue(user_id=user_id, group_id=group_id)
+        info = await McpCredentialService(self.auth, self.db).connection_info(
+            user_id=user_id, group_id=group_id
+        )
+        token = info.authorization.removeprefix("Authorization: Bearer ")
         app = build_mcp_app(
             group_id,
             db=self.db,
@@ -305,44 +308,11 @@ class DebugService:
             await stream.aclose()
 
     async def _upstream_rpc(self, upstream_id: int, method: str, params: dict[str, Any]) -> _Exchange:
-        from app.modules.mcp_gateway.system.crud import BizSystemCRUD
-
         upstream = await UpstreamMcpCRUD(self.auth, self.db).get(id=upstream_id)
         if upstream is None:
             raise CustomException(msg="上游 MCP 不存在")
-        tools = await UpstreamToolCRUD(self.auth, self.db).get_list(search={"upstream_id": upstream_id})
-        biz = await BizSystemCRUD(self.auth, self.db).get(id=upstream.system_id)
-        if biz is None:
-            raise CustomException(msg="业务系统不存在")
         credential = CryptoUtil.decrypt(upstream.credential_value_encrypted)
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-        headers = {
-            upstream.credential_header: credential,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        if method == "tools/call":
-            client = UpstreamClient(
-                upstream=upstream,
-                system_code=biz.code,
-                tools=list(tools),
-                transport=self.transport,
-            )
-            remote = str(params.get("name") or "")
-            external = _external_for_remote(tools, upstream_id, remote) or remote
-            call_params = {"name": remote, "arguments": dict(params.get("arguments") or {})}
-            result = await client.call(upstream_id, external, call_params["arguments"])
-            body = result.body
-            if not isinstance(body, dict):
-                body = {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": str(body)}]}}
-            return _Exchange(
-                result.status,
-                headers,
-                {"jsonrpc": "2.0", "id": 1, "method": method, "params": call_params},
-                body,
-                (credential,),
-            )
-
         status, content, sent_headers = await _upstream_post(upstream, credential, payload, self.transport)
         return _Exchange(status, sent_headers, payload, _decode_bytes(content), (credential,))
 
@@ -356,13 +326,6 @@ class DebugService:
             if row.access_token:
                 secrets.append(row.access_token)
         return tuple(dict.fromkeys(item for item in secrets if item))
-
-
-def _external_for_remote(tools: list[Any], upstream_id: int, remote: str) -> str | None:
-    for tool in tools:
-        if tool.upstream_id == upstream_id and tool.remote_name == remote and not tool.is_deleted:
-            return tool.external_name
-    return None
 
 
 async def _upstream_post(
