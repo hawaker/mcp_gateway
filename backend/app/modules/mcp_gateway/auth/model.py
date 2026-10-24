@@ -32,4 +32,4 @@ class AuthConfigModel(ModelMixin):
     rule: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, comment="取值规则")
     http_method: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="HTTP 方法")
     username: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="Basic 用户名")
-    password: Mapped[str | None] = mapped_column(String(512), nullable=True, comment="Basic 密码")
+    password_encrypted: Mapped[str | None] = mapped_column(String(512), nullable=True, comment="Basic 密码密文")

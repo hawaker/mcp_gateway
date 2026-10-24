@@ -83,7 +83,7 @@ def _auth() -> AuthConfigModel:
         },
         http_method=None,
         username=None,
-        password=None,
+        password_encrypted=None,
     )
 
 
@@ -255,3 +255,32 @@ async def test_debug_masks_percent_encoded_token_in_query_url() -> None:
     rendered = json.dumps(result.request, ensure_ascii=False)
     assert token not in rendered
     assert encoded not in rendered
+
+
+async def test_debug_masks_biz_token_even_with_static_authorization_header() -> None:
+    """token_in=query 且存在静态 Authorization 时，调试视图仍遮住缓存里的业务 token。"""
+    draft = _draft()
+    draft["token_in"] = "query"
+    draft["token_name"] = "access_token"
+    draft["headers"] = {"Authorization": "Bearer static-api-key", "X-Uid": "{{user.uid}}"}
+    result, business = await _debug_bound(draft, {"page": 1}, reveal=False)
+
+    assert len(business) == 1
+    assert business[0].url.params["access_token"] == _BUSINESS_TOKEN
+    assert business[0].headers["authorization"] == "Bearer static-api-key"
+    rendered = json.dumps({"request": result.request, "response": result.response}, ensure_ascii=False)
+    assert _BUSINESS_TOKEN not in rendered
+    assert "static-api-key" not in rendered
+
+
+def test_debug_op_log_markers_cover_gateway_debug_routes() -> None:
+    from app.core.router_class import _DEBUG_OP_LOG_PATH_MARKERS
+
+    paths = (
+        "/api/v1/mcp-gateway/rest-tool/debug",
+        "/api/v1/mcp-gateway/debug/session",
+        "/api/v1/mcp-gateway/debug/tools/list",
+        "/api/v1/mcp-gateway/debug/tools/call",
+    )
+    for path in paths:
+        assert any(marker in path for marker in _DEBUG_OP_LOG_PATH_MARKERS)

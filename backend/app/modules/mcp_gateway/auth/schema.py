@@ -23,7 +23,7 @@ def _clean_username(value: str | None) -> str | None:
 
 
 class AuthConfigCreateSchema(BaseModel):
-    """创建一条业务系统鉴权。Basic 的账号密码属于系统，不放在用户上。"""
+    """创建一条业务系统鉴权。Basic 的账号密码属于系统，不放在用户上。password 只写不读。"""
 
     system_id: int = Field(..., ge=1, description="业务系统ID")
     method: AuthMethod = Field(..., description="鉴权方法")
@@ -51,7 +51,7 @@ class AuthConfigCreateSchema(BaseModel):
 
 
 class AuthConfigUpdateSchema(BaseModel):
-    """更新一条鉴权。未提交的字段保持原值。"""
+    """更新一条鉴权。未提交的字段保持原值。password 留空则保持原密文。"""
 
     system_id: int | None = Field(default=None, ge=1, description="业务系统ID")
     method: AuthMethod | None = Field(default=None, description="鉴权方法")
@@ -75,10 +75,18 @@ class AuthConfigUpdateSchema(BaseModel):
         return _clean_username(value)
 
 
-class AuthConfigOutSchema(AuthConfigCreateSchema, BaseSchema):
-    """鉴权配置响应。"""
+class AuthConfigOutSchema(BaseSchema):
+    """列表和详情。没有明文密码，也没有密文。"""
 
     model_config = ConfigDict(from_attributes=True)
+
+    system_id: int = Field(description="业务系统ID")
+    method: AuthMethod = Field(description="鉴权方法")
+    enabled: bool = Field(description="是否启用")
+    url: str = Field(description="鉴权地址")
+    rule: dict[str, Any] = Field(description="取值规则")
+    http_method: HttpMethod | None = Field(default=None, description="HTTP 方法")
+    username: str | None = Field(default=None, description="Basic 用户名")
 
 
 class AuthConfigQueryParam(BaseQueryParam):

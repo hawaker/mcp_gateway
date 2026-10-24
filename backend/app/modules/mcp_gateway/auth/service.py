@@ -4,6 +4,7 @@ from app.core.base_schema import AuthSchema, PageResultSchema
 from app.core.exceptions import CustomException
 from app.modules.mcp_gateway.system.crud import BizSystemCRUD
 from app.utils.common_util import search_to_dict
+from app.utils.crypto_util import CryptoUtil
 
 from .crud import AuthConfigCRUD
 from .schema import (
@@ -47,7 +48,7 @@ class AuthConfigService:
         await self._lock_systems(data.system_id)
         if data.enabled:
             await self._disable_others(data.system_id, keep_id=None)
-        obj = await AuthConfigCRUD(self.auth, self.db).create(data=data)
+        obj = await AuthConfigCRUD(self.auth, self.db).create(data=self._create_payload(data))
         return AuthConfigOutSchema.model_validate(obj)
 
     async def update(self, config_id: int, data: AuthConfigUpdateSchema) -> AuthConfigOutSchema:
@@ -61,13 +62,25 @@ class AuthConfigService:
         method = submitted.get("method", current.method)
         http_method = submitted.get("http_method", current.http_method)
         username = submitted.get("username", current.username)
-        password = submitted.get("password", current.password)
-        self._validate_method_fields(method, http_method, username, password)
+        new_password = submitted.get("password")
+        if isinstance(new_password, str) and new_password.strip():
+            password_for_check: str | None = new_password.strip()
+        elif current.password_encrypted:
+            password_for_check = "kept"
+        else:
+            password_for_check = None
+        self._validate_method_fields(method, http_method, username, password_for_check)
         enabled = submitted.get("enabled", current.enabled)
         await self._lock_systems(current.system_id, system_id)
         if enabled:
             await self._disable_others(system_id, keep_id=config_id)
-        obj = await AuthConfigCRUD(self.auth, self.db).update(id=config_id, data=data)
+        payload = {key: value for key, value in submitted.items() if key != "password"}
+        password = submitted.get("password")
+        if isinstance(password, str) and password.strip():
+            payload["password_encrypted"] = CryptoUtil.encrypt(password.strip())
+        if not payload:
+            return AuthConfigOutSchema.model_validate(current)
+        obj = await AuthConfigCRUD(self.auth, self.db).update(id=config_id, data=payload)
         return AuthConfigOutSchema.model_validate(obj)
 
     async def _require_system(self, system_id: int) -> None:
@@ -92,6 +105,15 @@ class AuthConfigService:
             changed = True
         if changed:
             await self.db.flush()
+
+    @staticmethod
+    def _create_payload(data: AuthConfigCreateSchema) -> dict:
+        payload = data.model_dump(exclude={"password"})
+        if data.password:
+            payload["password_encrypted"] = CryptoUtil.encrypt(data.password)
+        else:
+            payload["password_encrypted"] = None
+        return payload
 
     @staticmethod
     def _validate_method_fields(

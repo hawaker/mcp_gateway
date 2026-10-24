@@ -31,6 +31,8 @@ _SENSITIVE_KEYS: set[str] = {
     "credential_value",
 }
 _REDACTED = "******"
+# 调试接口的 HTTP 响应在 reveal=true 时可能含明文 token；操作日志一律不落响应正文。
+_DEBUG_OP_LOG_PATH_MARKERS = ("/rest-tool/debug", "/mcp-gateway/debug/")
 
 
 def _redact_sensitive(obj: Any) -> Any:
@@ -107,7 +109,11 @@ class OperationLogRoute(APIRoute):
                     log_payload = "请求参数过长"
 
                 is_json = "application/json" in response.headers.get("Content-Type", "")
-                if is_json:
+                path = request.url.path
+                if any(marker in path for marker in _DEBUG_OP_LOG_PATH_MARKERS):
+                    # reveal=true 时 token 可能嵌在 url 等非敏感键名里；调试响应正文不入操作日志。
+                    response_data = b'{"_redacted":"debug response omitted"}'
+                elif is_json:
                     # 响应体同样脱敏：登录/刷新响应含 access_token，明文入库等于 token 泄露
                     try:
                         response_data = json.dumps(_redact_sensitive(json.loads(bytes(response.body).decode())), ensure_ascii=False).encode()

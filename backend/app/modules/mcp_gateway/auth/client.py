@@ -18,6 +18,7 @@ from app.modules.mcp_gateway.auth.refresh import run_under_token_lock
 from app.modules.mcp_gateway.binding.model import BizBindingModel
 from app.modules.mcp_gateway.system.model import BizSystemModel
 from app.modules.mcp_gateway.token_cache.store import TokenCache
+from app.utils.crypto_util import CryptoUtil
 
 # 只认这四种。调用参数里的同名值不参与替换。
 _PLACEHOLDER = re.compile(r"\{\{(?:system\.(?P<system>[A-Za-z0-9_]+)|user\.uid|user\.attr\.(?P<attr>[A-Za-z0-9_]+)|token)\}\}")
@@ -228,7 +229,10 @@ class AuthClient:
         elif body is not None:
             kwargs["json"] = self._render_value(body, token=None)
         if self.auth.method == "basic":
-            kwargs["auth"] = httpx.BasicAuth(self.auth.username or "", self.auth.password or "")
+            kwargs["auth"] = httpx.BasicAuth(
+                self.auth.username or "",
+                CryptoUtil.decrypt_or_keep(self.auth.password_encrypted),
+            )
         http_method = str(self.auth.http_method or "GET").upper()
         return http_method, url, kwargs
 

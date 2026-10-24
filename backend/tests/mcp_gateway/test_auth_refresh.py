@@ -87,7 +87,7 @@ def _auth(
         rule=dict(rule or _TOKEN_RULE),
         http_method=http_method,
         username=username,
-        password=password,
+        password_encrypted=password,
     )
 
 

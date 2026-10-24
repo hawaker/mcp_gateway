@@ -64,7 +64,7 @@ class _Call:
     status: int
     text: str
     request: httpx.Request
-    secret: str
+    secrets: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,7 +151,10 @@ class RestToolService:
         arguments: Mapping[str, Any] | None = None,
         reveal: bool = False,
     ) -> RestToolDebugResultSchema:
-        """按未保存的表单发一次业务请求。不插入工具，不写调用日志。"""
+        """按未保存的表单发一次业务请求。不插入工具，不写调用日志。
+
+        reveal=true 时 HTTP 响应可含明文；操作日志仍应遮住密钥（见 OperationLogRoute）。
+        """
         data = _tool_dict(draft)
         try:
             called = await self._execute(data, user_id, arguments or {})
@@ -160,8 +163,9 @@ class RestToolService:
         body = apply_jsonpath(_decode_body(called.text), _optional_text(data.get("jsonpath_filter")))
         request_view = _request_view(called.request)
         if not reveal:
-            request_view = mask_secret(request_view, called.secret)
-            body = mask_secret(body, called.secret)
+            for secret in called.secrets:
+                request_view = mask_secret(request_view, secret)
+                body = mask_secret(body, secret)
         return RestToolDebugResultSchema(status=called.status, request=request_view, response=body)
 
     async def invoke(self, tool_id: int, user_id: int, arguments: Mapping[str, Any] | None = None) -> UpstreamResult:
@@ -237,8 +241,14 @@ class RestToolService:
             if owns_transport:
                 await transport.aclose()
         bundle = await cache.get(user_id, system.id)
-        secret = _bearer(upstream_request) or (bundle.access_token if bundle is not None else "")
-        return _Call(status=upstream_status, text=text, request=upstream_request, secret=secret)
+        secrets: list[str] = []
+        # 始终遮住缓存里的业务 access_token；Authorization 里若还有别的 bearer 一并遮住。
+        if bundle is not None and bundle.access_token:
+            secrets.append(bundle.access_token)
+        bearer = _bearer(upstream_request)
+        if bearer and bearer not in secrets:
+            secrets.append(bearer)
+        return _Call(status=upstream_status, text=text, request=upstream_request, secrets=tuple(secrets))
 
     async def _context(
         self,
