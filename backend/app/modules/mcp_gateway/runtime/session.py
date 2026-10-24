@@ -24,9 +24,13 @@ def _text(value: Any) -> str | None:
     return str(value)
 
 
-async def write_session(redis: Any, session_id: str, group_id: int) -> None:
-    """记下这条 SSE 属于哪个 MCP 组。键带 TTL，避免断线后一直留着。"""
-    await redis.set(session_key(session_id), json.dumps({"group_id": group_id}), ex=SESSION_TTL_SECONDS)
+async def write_session(redis: Any, session_id: str, group_id: int, user_id: int) -> None:
+    """记下这条 SSE 属于哪个 MCP 组和哪个业务用户。键带 TTL，避免断线后一直留着。"""
+    await redis.set(
+        session_key(session_id),
+        json.dumps({"group_id": group_id, "user_id": user_id}),
+        ex=SESSION_TTL_SECONDS,
+    )
 
 
 async def refresh_session(redis: Any, session_id: str) -> None:
@@ -34,8 +38,8 @@ async def refresh_session(redis: Any, session_id: str) -> None:
     await redis.expire(session_key(session_id), SESSION_TTL_SECONDS)
 
 
-async def read_session(redis: Any, session_id: str) -> int | None:
-    """键不存在或内容不是组号时返回 None。"""
+async def read_session(redis: Any, session_id: str) -> dict[str, int] | None:
+    """键不存在或内容不是合法会话时返回 None。"""
     raw = _text(await redis.get(session_key(session_id)))
     if not raw:
         return None
@@ -46,9 +50,12 @@ async def read_session(redis: Any, session_id: str) -> int | None:
     if not isinstance(data, dict):
         return None
     group_id = data.get("group_id")
+    user_id = data.get("user_id")
     if isinstance(group_id, bool) or not isinstance(group_id, int):
         return None
-    return group_id
+    if isinstance(user_id, bool) or not isinstance(user_id, int):
+        return None
+    return {"group_id": group_id, "user_id": user_id}
 
 
 async def publish_result(redis: Any, session_id: str, payload: dict[str, Any]) -> None:

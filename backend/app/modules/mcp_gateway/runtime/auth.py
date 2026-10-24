@@ -7,7 +7,7 @@ from app.core.base_schema import AuthSchema
 from app.core.exceptions import CustomException
 from app.modules.mcp_gateway.mcp_group.crud import McpGroupCRUD, McpGroupMemberCRUD
 from app.modules.mcp_gateway.mcp_group.service import McpCredentialService
-from app.modules.mcp_gateway.user.crud import BizUserGroupCRUD
+from app.modules.mcp_gateway.user.crud import BizUserCRUD, BizUserGroupCRUD
 from app.modules.mcp_gateway.user.model import BizUserGroupMemberModel
 
 
@@ -17,6 +17,10 @@ class CredentialRejected(Exception):
     def __init__(self, message: str = "凭证无效") -> None:
         self.message = message
         super().__init__(message)
+
+
+class InvalidGroupId(Exception):
+    """路径里的 group_id 不是合法整数。"""
 
 
 def bearer_token(authorization: str | None) -> str | None:
@@ -41,8 +45,11 @@ async def verify_bearer(db: AsyncSession, authorization: str | None) -> tuple[in
 
 
 async def allowed(db: AsyncSession, user_id: int, group_id: int) -> bool:
-    """组必须启用。本人是启用的直接成员，或仍在某个已启用且被勾选的业务用户组里。"""
+    """组必须启用。业务用户必须启用。本人是启用的直接成员，或仍在某个已启用且被勾选的业务用户组里。"""
     auth = AuthSchema()
+    user = await BizUserCRUD(auth, db).get(id=user_id)
+    if user is None or not user.enabled:
+        return False
     group = await McpGroupCRUD(auth, db).get(id=group_id)
     if group is None or not group.enabled:
         return False

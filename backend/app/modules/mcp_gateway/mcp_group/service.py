@@ -262,6 +262,12 @@ class McpGroupService:
                     "enabled": data.enabled,
                 }
             )
+        elif existing.enabled != data.enabled:
+            # 再次添加时采用本次提交的 enabled，避免悄悄留下停用行。
+            existing = await McpGroupMemberCRUD(self.auth, self.db).update(
+                id=existing.id,
+                data={"enabled": data.enabled},
+            )
         if existing.enabled:
             await self._issue_principal(group_id, existing.principal_type, existing.principal_id)
         return McpGroupMemberOutSchema.model_validate(existing)

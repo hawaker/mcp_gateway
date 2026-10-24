@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from app.core.base_schema import AuthSchema
+from app.core.exceptions import CustomException
 from app.modules.mcp_gateway.auth.client import BindingUnavailable
 from app.modules.mcp_gateway.call_log.service import CallLogService
 from app.modules.mcp_gateway.mcp_group.crud import McpGroupToolCRUD
@@ -27,7 +28,7 @@ from app.modules.mcp_gateway.system.crud import BizSystemCRUD
 from app.modules.mcp_gateway.upstream.client import UpstreamClient
 from app.modules.mcp_gateway.upstream.crud import UpstreamMcpCRUD, UpstreamToolCRUD
 
-from .auth import CredentialRejected, allowed, verify_bearer
+from .auth import CredentialRejected, InvalidGroupId, allowed, verify_bearer
 from .session import message_channel, publish_result, read_session, refresh_session, write_session
 
 _PROTOCOL = "2025-03-26"
@@ -70,6 +71,7 @@ class _CallFact:
 class _Performed:
     text: str
     http_status: int | None
+    is_error: bool = False
 
 
 def build_mcp_app(
@@ -125,33 +127,44 @@ class McpRuntime:
 
     async def streamable(self, request: Request) -> Response:
         if request.method == "GET":
-            group_id = self._group_id(request)
             try:
+                group_id = self._group_id(request)
                 async with self._db() as db:
                     await self._authenticate(db, request, group_id)
+            except InvalidGroupId:
+                return _json({"error": "MCP 组不存在"}, 404)
             except CredentialRejected as exc:
                 return _unauthorized(exc)
             return _event_stream(": ok\n\n")
         return await self._jsonrpc(request)
 
     async def sse(self, request: Request) -> Response:
-        group_id = self._group_id(request)
         try:
+            group_id = self._group_id(request)
             async with self._db() as db:
                 user_id = await self._authenticate(db, request, group_id)
                 if not await allowed(db, user_id, group_id):
                     return _json({"error": _DENIED}, 200)
+        except InvalidGroupId:
+            return _json({"error": "MCP 组不存在"}, 404)
         except CredentialRejected as exc:
             return _unauthorized(exc)
         session_id = secrets.token_urlsafe(24)
         return StreamingResponse(
-            self._sse_events(self._redis(request), self._pubsub_redis(request), session_id, group_id),
+            self._sse_events(self._redis(request), self._pubsub_redis(request), session_id, group_id, user_id),
             media_type="text/event-stream",
             headers=_SSE_HEADERS,
         )
 
-    async def _sse_events(self, redis: Any, pubsub_redis: Any, session_id: str, group_id: int) -> AsyncIterator[str]:
-        await write_session(redis, session_id, group_id)
+    async def _sse_events(
+        self,
+        redis: Any,
+        pubsub_redis: Any,
+        session_id: str,
+        group_id: int,
+        user_id: int,
+    ) -> AsyncIterator[str]:
+        await write_session(redis, session_id, group_id, user_id)
         pubsub = pubsub_redis.pubsub()
         try:
             await pubsub.subscribe(message_channel(session_id))
@@ -174,11 +187,21 @@ class McpRuntime:
             await pubsub.aclose()
 
     async def messages(self, request: Request) -> Response:
-        group_id = self._group_id(request)
+        try:
+            group_id = self._group_id(request)
+        except InvalidGroupId:
+            return _json({"error": "MCP 组不存在"}, 404)
         session_id = request.query_params.get("session_id") or request.query_params.get("sessionId") or ""
         redis = self._redis(request)
         found = await read_session(redis, session_id) if session_id else None
-        if found is None or found != group_id:
+        if found is None or found["group_id"] != group_id:
+            return _json({"error": "会话不存在"}, 404)
+        try:
+            async with self._db() as db:
+                user_id = await self._authenticate(db, request, group_id)
+        except CredentialRejected as exc:
+            return _unauthorized(exc)
+        if user_id != found["user_id"]:
             return _json({"error": "会话不存在"}, 404)
         outcome = await self._handle(request)
         if isinstance(outcome, Response):
@@ -187,7 +210,10 @@ class McpRuntime:
         return _empty(202)
 
     async def _jsonrpc(self, request: Request) -> Response:
-        outcome = await self._handle(request)
+        try:
+            outcome = await self._handle(request)
+        except InvalidGroupId:
+            return _json({"error": "MCP 组不存在"}, 404)
         if isinstance(outcome, Response):
             return outcome
         return _json(outcome, 200)
@@ -225,7 +251,7 @@ class McpRuntime:
         performed = await self._perform(request, plan)
         async with self._db() as db:
             await self._record(db, fact, performed.http_status, _succeeded(performed.http_status), started)
-        return _text_result(rpc_id, performed.text, is_error=performed.text == _DENIED)
+        return _text_result(rpc_id, performed.text, is_error=performed.is_error or performed.text == _DENIED)
 
     async def _plan(
         self,
@@ -387,24 +413,27 @@ class McpRuntime:
         )
 
     async def _perform(self, request: Request, plan: _RestCall | _UpstreamCall) -> _Performed:
-        if isinstance(plan, _RestCall):
-            service = RestToolService(AuthSchema(), self.db, self._redis(request), transport=self.transport)
-            try:
-                result = await service.invoke(plan.tool_id, plan.user_id, plan.arguments)
-            except BindingUnavailable:
-                return _Performed(_DENIED, None)
-            if result.link:
-                return _Performed(result.link, None)
-            return _Performed(_render_body(result.body), result.status)
-        client = UpstreamClient(
-            upstream=plan.upstream,
-            system_code=plan.system_code,
-            tools=list(plan.tools),
-            transport=self.transport,
-        )
-        result = await client.call(plan.upstream.id, plan.external_name, dict(plan.arguments))
-        text = json.dumps({"status": result.status, "body": result.body}, ensure_ascii=False)
-        return _Performed(text, result.status)
+        try:
+            if isinstance(plan, _RestCall):
+                service = RestToolService(AuthSchema(), self.db, self._redis(request), transport=self.transport)
+                try:
+                    result = await service.invoke(plan.tool_id, plan.user_id, plan.arguments)
+                except BindingUnavailable:
+                    return _Performed(_DENIED, None, is_error=True)
+                if result.link:
+                    return _Performed(result.link, None)
+                return _Performed(_render_body(result.body), result.status)
+            client = UpstreamClient(
+                upstream=plan.upstream,
+                system_code=plan.system_code,
+                tools=list(plan.tools),
+                transport=self.transport,
+            )
+            result = await client.call(plan.upstream.id, plan.external_name, dict(plan.arguments))
+            text = json.dumps({"status": result.status, "body": result.body}, ensure_ascii=False)
+            return _Performed(text, result.status)
+        except CustomException as exc:
+            return _Performed(exc.msg or "调用失败", None, is_error=True)
 
     async def _authenticate(self, db: Any, request: Request, group_id: int) -> int:
         user_id, token_group_id = await verify_bearer(db, request.headers.get("authorization"))
@@ -415,7 +444,11 @@ class McpRuntime:
     def _group_id(self, request: Request) -> int:
         if self.bound_group_id is not None:
             return self.bound_group_id
-        return int(request.path_params["group_id"])
+        raw = request.path_params.get("group_id")
+        try:
+            return int(raw)
+        except (TypeError, ValueError) as exc:
+            raise InvalidGroupId() from exc
 
     def _redis(self, request: Request) -> Any:
         if self.redis is not None:

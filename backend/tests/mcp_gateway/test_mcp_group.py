@@ -463,3 +463,56 @@ def test_revision_follows_upstream_tool_unique() -> None:
     assert revision is not None
     assert revision.down_revision == "b6e2d8a14c90"
     assert revision.revision != "b6e2d8a14c90"
+
+
+async def test_add_member_again_re_enables_disabled_row(db) -> None:
+    """再次添加已停用成员时，采用本次提交的 enabled，并重新签发凭证。"""
+    user = await _user(db, name="再启用")
+    group = await _mcp_group(db, name="再启用组")
+    groups = McpGroupService(_auth(), db)
+    credentials = McpCredentialService(_auth(), db)
+    first = await groups.add_member(
+        group.id,
+        McpGroupMemberCreateSchema(principal_type="user", principal_id=user.id, enabled=True),
+    )
+    await credentials.issue(user_id=user.id, group_id=group.id)
+    await groups.disable_member(group_id=group.id, principal_type="user", principal_id=user.id)
+    again = await groups.add_member(
+        group.id,
+        McpGroupMemberCreateSchema(principal_type="user", principal_id=user.id, enabled=True),
+    )
+    assert again.id == first.id
+    assert again.enabled is True
+    member = (
+        await db.execute(
+            select(McpGroupMemberModel).where(McpGroupMemberModel.id == first.id)
+        )
+    ).scalar_one()
+    assert member.enabled is True
+    assert await _credential_count(db, user.id, group.id) == 1
+
+
+async def test_late_biz_group_joiner_gets_credential(db) -> None:
+    """业务用户组已是启用 MCP 成员后，后来通过服务加入的用户会拿到凭证。"""
+    from app.modules.mcp_gateway.user.service import BizUserService
+
+    early = await _user(db, name="先到")
+    late = await _user(db, name="后到")
+    biz_group = await _biz_group(db, "后加入")
+    await _join(db, early.id, biz_group.id)
+    mcp_group = await _mcp_group(db, name="联动签发")
+    groups = McpGroupService(_auth(), db)
+    credentials = McpCredentialService(_auth(), db)
+    await groups.add_member(
+        mcp_group.id,
+        McpGroupMemberCreateSchema(principal_type="group", principal_id=biz_group.id),
+    )
+    early_token = await credentials.issue(user_id=early.id, group_id=mcp_group.id)
+    assert await _credential_count(db, late.id, mcp_group.id) == 0
+
+    await BizUserService(_auth(), db).add_to_groups(late.id, [biz_group.id])
+    assert await _credential_count(db, late.id, mcp_group.id) == 1
+    late_row = await _credential_row(db, late.id, mcp_group.id)
+    late_raw = CryptoUtil.decrypt(late_row.token_encrypted)
+    assert await credentials.verify(late_raw) == (late.id, mcp_group.id)
+    assert await credentials.verify(early_token) == (early.id, mcp_group.id)

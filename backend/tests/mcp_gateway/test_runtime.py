@@ -784,7 +784,7 @@ async def test_sse_result_arrives_on_the_other_instances_get_stream(db) -> None:
         session_id = endpoint.removeprefix(marker).strip()
         stored = await session.get(f"mcp:sse:{session_id}")
         assert stored is not None
-        assert json.loads(stored)["group_id"] == group.id
+        assert json.loads(stored) == {"group_id": group.id, "user_id": user.id}
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=first), base_url="http://mcp.test") as poster:
             listed = await poster.post(endpoint, headers=_headers(token), json=_rpc("tools/list"))
@@ -921,3 +921,127 @@ async def test_runtime_routes_mount_at_app_root_without_admin_auth() -> None:
         )
     assert response.status_code == 401
     assert "无权限" not in json.dumps(response.json(), ensure_ascii=False)
+
+
+async def test_disabled_biz_user_is_denied_without_oa_request(db) -> None:
+    """业务用户停用后，凭证仍有效但 tools/call 返回无权限，且不请求 OA。"""
+    user = await _user(db)
+    system = await _system(db, "oa_user_off", base_url="https://oa.example.com")
+    await _auth_config(db, system.id)
+    await _binding(db, user.id, system.id)
+    tool = await _rest(db, system.id, "todos")
+    group = await _mcp_group(db, "停用用户")
+    token = await _member(db, group.id, user.id)
+    await _publish_rest(db, group.id, tool.id, "todos")
+    user.enabled = False
+    await db.flush()
+    gateway = _Gateway()
+    redis = ExpiringRedis()
+
+    async with _client(group.id, db, redis, httpx.MockTransport(gateway.handler)) as client:
+        await _initialize(client, group.id, token)
+        listed = await client.post(f"/mcp/{group.id}", headers=_headers(token), json=_rpc("tools/list"))
+        called = await client.post(
+            f"/mcp/{group.id}",
+            headers=_headers(token),
+            json=_rpc("tools/call", {"name": "todos", "arguments": {}}),
+        )
+
+    assert listed.status_code == 200
+    assert _visible_text(listed) == "无权限"
+    assert called.status_code == 200
+    assert _visible_text(called) == "无权限"
+    assert gateway.hits("oa.example.com") == []
+    assert await McpCredentialService(_auth(), db).verify(token) == (user.id, group.id)
+
+
+async def test_sse_rejects_other_member_posting_to_session(db) -> None:
+    """同一组另一成员的 bearer 不能往别人的 SSE session 投递结果。"""
+    owner = await _user(db, "主人")
+    other = await _user(db, "外人")
+    system = await _system(db, "oa_sse_bind", base_url="https://oa.example.com")
+    tool = await _rest(db, system.id, "search", jsonpath_filter=None)
+    group = await _mcp_group(db, "会话绑定")
+    owner_token = await _member(db, group.id, owner.id)
+    other_token = await _member(db, group.id, other.id)
+    await _publish_rest(db, group.id, tool.id, "search")
+    session = StreamingRedis()
+    events = StreamingRedis(subscribers=session.subscribers)
+    app = build_mcp_app(group.id, db=db, redis=session, pubsub_redis=events, transport=httpx.MockTransport(_Gateway().handler))
+    stream = _OpenSse(app, f"/mcp/{group.id}/sse", owner_token)
+    try:
+        await stream.wait_started()
+        _event, endpoint = await stream.next_event()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test") as poster:
+            hijack = await poster.post(endpoint, headers=_headers(other_token), json=_rpc("tools/list"))
+            ok = await poster.post(endpoint, headers=_headers(owner_token), json=_rpc("tools/list", rpc_id=2))
+        assert hijack.status_code == 404
+        assert ok.status_code == 202
+        message_event, message_data = await stream.next_event()
+        assert message_event == "message"
+        assert json.loads(message_data)["id"] == 2
+    finally:
+        await stream.aclose()
+
+
+async def test_non_numeric_group_id_returns_404(db) -> None:
+    """路径 group_id 不是数字时返回 404，而不是未处理的 ValueError。"""
+    from app.modules.mcp_gateway.runtime.app import McpRuntime
+
+    runtime = McpRuntime(db=db, redis=ExpiringRedis(), pubsub_redis=ExpiringRedis(), bound_group_id=None)
+    app = FastAPI()
+    app.add_api_route("/mcp/{group_id}", runtime.streamable, methods=["GET", "POST"])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test") as client:
+        response = await client.post(
+            "/mcp/not-a-number",
+            headers={"Content-Type": "application/json"},
+            json=_rpc("initialize"),
+        )
+    assert response.status_code == 404
+    assert response.json()["error"] == "MCP 组不存在"
+
+
+async def test_custom_exception_from_invoke_becomes_tool_error(db) -> None:
+    """invoke 抛出 CustomException 时仍返回 JSON-RPC tools/call 结果，并写调用日志。"""
+    from app.modules.mcp_gateway.call_log.model import CallLogModel
+
+    user = await _user(db)
+    system = await _system(db, "oa_disabled_sys", base_url="https://oa.example.com")
+    await _auth_config(db, system.id)
+    await _binding(db, user.id, system.id)
+    tool = await _rest(db, system.id, "todos")
+    group = await _mcp_group(db, "系统停用")
+    token = await _member(db, group.id, user.id)
+    await _publish_rest(db, group.id, tool.id, "todos")
+    system.enabled = False
+    await db.flush()
+    gateway = _Gateway()
+    redis = ExpiringRedis()
+
+    async with _client(group.id, db, redis, httpx.MockTransport(gateway.handler)) as client:
+        await _initialize(client, group.id, token)
+        called = await client.post(
+            f"/mcp/{group.id}",
+            headers=_headers(token),
+            json=_rpc("tools/call", {"name": "todos", "arguments": {}}),
+        )
+
+    assert called.status_code == 200
+    body = called.json()
+    assert body["jsonrpc"] == "2.0"
+    assert "result" in body
+    assert body["result"]["isError"] is True
+    assert "业务系统已停用" in _visible_text(called)
+    assert gateway.hits("oa.example.com") == []
+    logs = (
+        await db.execute(
+            select(func.count())
+            .select_from(CallLogModel)
+            .where(
+                CallLogModel.user_id == user.id,
+                CallLogModel.group_id == group.id,
+                CallLogModel.tool_name == "todos",
+            )
+        )
+    ).scalar_one()
+    assert logs >= 1
