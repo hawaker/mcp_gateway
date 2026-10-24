@@ -31,6 +31,8 @@ from app.utils.crypto_util import CryptoUtil
 
 _LOG_COLUMNS = {"id", "user_id", "group_id", "channel", "ok", "reason", "created_at"}
 _REVISION = "e5a9c2d84f17"
+_SINGLETON_REVISION = "d4f8a2c19e70"
+_SINGLETON_INDEX = "uq_mcp_smtp_config_singleton"
 _PASSWORD = "smtp-plain-secret"
 
 
@@ -213,9 +215,19 @@ def test_revision_follows_call_log() -> None:
     revision = script.get_revision(_REVISION)
     assert revision is not None
     assert revision.down_revision == "c8d4f1a07e53"
+    singleton = script.get_revision(_SINGLETON_REVISION)
+    assert singleton is not None
+    assert singleton.down_revision == _REVISION
     group_revision = script.get_revision("a7c3e9b14d62")
     assert group_revision is not None
     assert group_revision.down_revision == "b6e2d8a14c90"
+
+
+def test_smtp_singleton_unique_index() -> None:
+    index = next(idx for idx in SmtpConfigModel.__table__.indexes if idx.name == _SINGLETON_INDEX)
+    assert index.unique is True
+    exprs = [str(col) for col in index.expressions]
+    assert any("(1)" in expr for expr in exprs)
 
 
 def test_routers_and_permissions() -> None:
@@ -456,6 +468,52 @@ async def test_send_for_user_group_one_message_per_checked_mcp_group(db) -> None
     assert outsider_token not in "".join(bodies)
 
 
+async def test_send_for_group_rejects_disabled_mcp_group(db) -> None:
+    """MCP 组已禁用时不发信、不落成功记录。"""
+    person = await _user(db, "张三", "zhangsan@example.com")
+    group = await _mcp_group(db, "办公", enabled=False)
+    await _member(db, group.id, "user", person.id, enabled=True)
+    token = "zhangsan-disabled-group"
+    await _credential(db, person.id, group.id, token)
+    await _enable_smtp(db)
+
+    with pytest.raises(CustomException) as exc:
+        await _mail(db).send_for_group(group.id)
+
+    assert exc.value.msg == "MCP 组已禁用"
+    assert _messages() == []
+    rows = await _logs(db)
+    assert rows == []
+    assert not any(row.ok for row in rows)
+
+
+async def test_send_for_user_group_skips_disabled_mcp_group(db) -> None:
+    """用户组勾选里 MCP 组已禁用的跳过，启用的照常发。"""
+    person = await _user(db, "张三", "zhangsan@example.com")
+    biz = await _biz_group(db, "研发")
+    await _join(db, person.id, biz.id)
+    active = await _mcp_group(db, "办公", enabled=True)
+    closed = await _mcp_group(db, "财务", enabled=False)
+    await _member(db, active.id, "group", biz.id, enabled=True)
+    await _member(db, closed.id, "group", biz.id, enabled=True)
+    active_token = "zhangsan-office"
+    closed_token = "zhangsan-finance"
+    await _credential(db, person.id, active.id, active_token)
+    await _credential(db, person.id, closed.id, closed_token)
+    await _enable_smtp(db)
+
+    await _mail(db).send_for_user_group(biz.id)
+
+    bodies = {_body(message) for message in _messages()}
+    assert bodies == {_expected_body(active.id, active_token)}
+    assert closed_token not in "".join(bodies)
+    rows = await _logs(db)
+    assert {(row.user_id, row.group_id, row.channel, row.ok) for row in rows} == {
+        (person.id, active.id, "user_group", True),
+    }
+    assert not any(row.group_id == closed.id and row.ok for row in rows)
+
+
 async def test_disabled_user_group_principal_is_skipped(db) -> None:
     person = await _user(db, "张三", "zhangsan@example.com")
     biz = await _biz_group(db, "研发", enabled=False)
@@ -560,8 +618,41 @@ async def test_password_is_encrypted_and_blank_update_keeps_it(db) -> None:
             )
         )
     assert exc.value.status_code == 400
+    assert exc.value.msg == "SMTP 配置已存在"
     assert "another-secret" not in exc.value.msg
     assert await db.scalar(select(func.count()).select_from(SmtpConfigModel)) == 1
+
+
+async def test_smtp_second_create_maps_integrity_error(db) -> None:
+    """软检查被绕过时，唯一索引冲突仍映射为「SMTP 配置已存在」。"""
+    from unittest.mock import AsyncMock, patch
+
+    from sqlalchemy.exc import IntegrityError
+
+    from app.modules.mcp_gateway.smtp.crud import SmtpConfigCRUD
+
+    with (
+        patch.object(SmtpConfigCRUD, "get", new=AsyncMock(return_value=None)),
+        patch.object(
+            SmtpConfigCRUD,
+            "create",
+            new=AsyncMock(side_effect=IntegrityError("stmt", {}, Exception("uq_mcp_smtp_config_singleton"))),
+        ),
+    ):
+        with pytest.raises(CustomException) as exc:
+            await _smtp(db).create(
+                SmtpConfigCreateSchema(
+                    enabled=True,
+                    host="smtp.example.com",
+                    port=25,
+                    password="race-secret",
+                    from_address="race@example.com",
+                    encryption="none",
+                )
+            )
+    assert exc.value.msg == "SMTP 配置已存在"
+    assert "race-secret" not in exc.value.msg
+    assert await db.scalar(select(func.count()).select_from(SmtpConfigModel)) == 0
 
 
 async def test_test_send_does_not_write_mail_log(db) -> None:

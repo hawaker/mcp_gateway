@@ -1,5 +1,6 @@
 import smtplib
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.base_schema import AuthSchema, PageResultSchema
@@ -59,7 +60,10 @@ class SmtpConfigService:
         current = await SmtpConfigCRUD(self.auth, self.db).get()
         if current is not None:
             raise CustomException(msg="SMTP 配置已存在")
-        obj = await SmtpConfigCRUD(self.auth, self.db).create(data=self._payload(data))
+        try:
+            obj = await SmtpConfigCRUD(self.auth, self.db).create(data=self._payload(data))
+        except IntegrityError as exc:
+            raise CustomException(msg="SMTP 配置已存在") from exc
         return SmtpConfigOutSchema.model_validate(obj)
 
     async def update(self, config_id: int, data: SmtpConfigUpdateSchema) -> SmtpConfigOutSchema:

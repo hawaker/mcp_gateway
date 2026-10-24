@@ -52,6 +52,8 @@ class MailService:
         group = await McpGroupCRUD(self.auth, self.db).get(id=group_id)
         if group is None:
             raise CustomException(msg="MCP 组不存在")
+        if not group.enabled:
+            raise CustomException(msg="MCP 组已禁用")
         user_ids = await self._users_for_group(group_id)
         return await self._send_each(config, user_ids, group_id, "group")
 
@@ -67,7 +69,11 @@ class MailService:
         )
         user_ids = await BizUserGroupService(self.auth, self.db).list_member_user_ids(user_group_id)
         rows: list[MailLogOutSchema] = []
+        group_crud = McpGroupCRUD(self.auth, self.db)
         for link in links:
+            group = await group_crud.get(id=link.group_id)
+            if group is None or not group.enabled:
+                continue
             rows.extend(await self._send_each(config, user_ids, link.group_id, "user_group"))
         return rows
 
