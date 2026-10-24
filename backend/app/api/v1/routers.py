@@ -12,6 +12,7 @@ from app.modules.mcp_gateway.call_log.controller import CallLogRouter
 from app.modules.mcp_gateway.mail.controller import MailRouter
 from app.modules.mcp_gateway.mcp_group.controller import McpGroupRouter
 from app.modules.mcp_gateway.rest_tool.controller import RestToolRouter
+from app.modules.mcp_gateway.runtime.debug_controller import McpDebugRouter
 from app.modules.mcp_gateway.smtp.controller import SmtpRouter
 from app.modules.mcp_gateway.system.controller import BizSystemRouter
 from app.modules.mcp_gateway.token_cache.controller import BizTokenCacheRouter
@@ -87,6 +88,7 @@ DOMAIN_CONTROLLERS: dict[str, list[APIRouter]] = {
         CallLogRouter,
         SmtpRouter,
         MailRouter,
+        McpDebugRouter,
     ],
 }
 
