@@ -1,7 +1,6 @@
 """一个业务系统同时只有一条启用中的鉴权配置。Basic 密码只写不读。"""
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app.core.base_schema import AuthSchema
 from app.modules.mcp_gateway.auth.model import AuthConfigModel
@@ -82,51 +81,41 @@ async def test_basic_password_is_write_only_and_encrypted(db) -> None:
     assert CryptoUtil.decrypt(row.password_encrypted) == "super-secret-password"
 
 
-def test_only_one_enabled_auth_config_per_system(test_client: TestClient, auth_headers: dict[str, str]) -> None:
-    system = test_client.post(
-        "/mcp-gateway/biz-system/create",
-        json={
-            "name": "OA",
-            "code": "oa-auth",
-            "base_url": "https://oa.example.com",
-            "enabled": True,
-            "params": {},
-            "uid_field": "user_id",
-            "attr_fields": [],
-        },
-        headers=auth_headers,
-    )
-    assert system.status_code == 200, system.text
-    system_id = system.json()["data"]["id"]
+async def test_only_one_enabled_auth_config_per_system(db) -> None:
+    from app.modules.mcp_gateway.auth.schema import AuthConfigQueryParam
 
-    def create(url: str) -> dict:
-        created = test_client.post(
-            "/mcp-gateway/biz-auth/create",
-            json={
-                "system_id": system_id,
-                "method": "fixed",
-                "enabled": True,
-                "url": url,
-                "rule": {},
-            },
-            headers=auth_headers,
+    system = await _system(db, "oa-one-enabled")
+    service = AuthConfigService(_auth(), db)
+    first = await service.create(
+        AuthConfigCreateSchema(
+            system_id=system.id,
+            method="fixed",
+            enabled=True,
+            url="https://oa.example.com/login",
+            rule={},
         )
-        assert created.status_code == 200, created.text
-        return created.json()["data"]
-
-    create("https://oa.example.com/login")
-    second = create("https://oa.example.com/token")
-    listed = test_client.get(
-        "/mcp-gateway/biz-auth/list",
-        params={"page_no": 1, "page_size": 20, "system_id": system_id},
-        headers=auth_headers,
     )
-    assert listed.status_code == 200, listed.text
-    items = listed.json()["data"]["items"]
-    enabled = [item for item in items if item["enabled"]]
+    second = await service.create(
+        AuthConfigCreateSchema(
+            system_id=system.id,
+            method="fixed",
+            enabled=True,
+            url="https://oa.example.com/token",
+            rule={},
+        )
+    )
+    page = await service.page(
+        page_no=1,
+        page_size=20,
+        search=AuthConfigQueryParam(system_id=system.id),
+    )
+    items = page.items
     assert len(items) == 2
+    enabled = [item for item in items if item.enabled]
     assert len(enabled) == 1
-    assert enabled[0]["id"] == second["id"]
+    assert enabled[0].id == second.id
+    assert first.id != second.id
     for item in items:
-        assert "password" not in item
-        assert "password_encrypted" not in item
+        dump = item.model_dump()
+        assert "password" not in dump
+        assert "password_encrypted" not in dump
