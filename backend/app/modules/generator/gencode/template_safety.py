@@ -311,6 +311,21 @@ _BASE_MODIFIER_RE = re.compile(r"\s+(unsigned|zerofill)$", re.IGNORECASE)
 # 避免对全大写常量二次赋值（类型检查会报 reportConstantRedefinition，也是不必要的可变性）。
 _SQLALCHEMY_TYPE_WHITELIST: frozenset[str] = frozenset(GenConstant.DB_TO_SQLALCHEMY.values()) | {"Boolean"}
 
+# 非顶层 sqlalchemy 导出的类型 → (模块, 类名)。
+# 生成器只按此表拼 import，避免产出 `from sqlalchemy import JSONB` 这类非法语句：
+# JSONB / INET / CIDR / MACADDR / BIT / TSVECTOR / TSQUERY 实际位于
+# sqlalchemy.dialects.postgresql；JSONType 是基类提供的跨方言类型；Geometry 位于 geoalchemy2。
+DIALECT_TYPE_IMPORTS: dict[str, tuple[str, str]] = {
+    "JSONType": ("app.core.base_model", "JSONType"),
+    "INET": ("sqlalchemy.dialects.postgresql", "INET"),
+    "CIDR": ("sqlalchemy.dialects.postgresql", "CIDR"),
+    "MACADDR": ("sqlalchemy.dialects.postgresql", "MACADDR"),
+    "BIT": ("sqlalchemy.dialects.postgresql", "BIT"),
+    "TSVECTOR": ("sqlalchemy.dialects.postgresql", "TSVECTOR"),
+    "TSQUERY": ("sqlalchemy.dialects.postgresql", "TSQUERY"),
+    "Geometry": ("geoalchemy2", "Geometry"),
+}
+
 
 def _lookup_sqlalchemy_type(base: str) -> str:
     """按基名（大小写不敏感）在常量白名单中查表。

@@ -185,6 +185,10 @@ class BaseStorageAdapter(ABC):
         """列出账号下全部存储桶（对象存储专用）。FTP/SFTP/LOCAL 等协议无需实现。"""
         raise NotImplementedError(f"{type(self).__name__} 不支持桶列表")
 
+    def _sync_create_bucket(self, bucket: str) -> None:
+        """创建存储桶（对象存储专用）。FTP/SFTP/LOCAL 等协议无需实现。"""
+        raise NotImplementedError(f"{type(self).__name__} 不支持创建桶")
+
     def _multipart_settings(self) -> tuple[int, int, bool]:
         """返回 (分片大小, 并发数, 是否分片)，分片大小单位字节；并发按内存预算护栏收敛。
 
@@ -429,6 +433,10 @@ class BaseStorageAdapter(ABC):
     async def list_buckets(self) -> list[str]:
         """列出账号下全部存储桶（对象存储专用）。"""
         return await asyncio.to_thread(self._sync_list_buckets)
+
+    async def create_bucket(self, bucket: str) -> None:
+        """创建存储桶（对象存储专用；桶名规则由各协议校验）。"""
+        await asyncio.to_thread(self._sync_create_bucket, bucket)
 
     async def list_recursive(self, prefix: str = "") -> list[StorageObject]:
         """递归列出目录树（含隐含目录条目）。"""

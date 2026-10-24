@@ -1,6 +1,6 @@
-from typing import Any
+from __future__ import annotations
 
-from qcloud_cos import CosConfig, CosS3Client
+from typing import TYPE_CHECKING, Any
 
 from app.core.exceptions import CustomException
 from app.core.logger import logger
@@ -11,6 +11,12 @@ from app.modules.task.storage.core.base import (
     StoragePage,
     StorageProtocol,
 )
+from app.utils.lazy_sdk import lazy_module
+
+if TYPE_CHECKING:
+    import qcloud_cos
+else:
+    qcloud_cos = lazy_module("qcloud_cos")
 
 
 class CosStorageAdapter(BaseStorageAdapter):
@@ -30,7 +36,7 @@ class CosStorageAdapter(BaseStorageAdapter):
             proxies["http"] = adv.http_proxy
         if adv.https_proxy:
             proxies["https"] = adv.https_proxy
-        cos_config = CosConfig(
+        cos_config = qcloud_cos.CosConfig(
             Region=self.config.region,
             SecretId=self.config.username or "",
             SecretKey=self.config.password or "",
@@ -47,7 +53,7 @@ class CosStorageAdapter(BaseStorageAdapter):
             KeepAlive=adv.keep_alive,
             AllowRedirects=adv.allow_redirects,
         )
-        self.client = CosS3Client(cos_config, retry=adv.retry)
+        self.client = qcloud_cos.CosS3Client(cos_config, retry=adv.retry)
         self._adv = adv
 
     def _sync_test_connection(self) -> bool:
@@ -266,6 +272,16 @@ class CosStorageAdapter(BaseStorageAdapter):
         except Exception:
             logger.exception('COS 桶列表失败')
             raise
+
+    def _sync_create_bucket(self, bucket: str) -> None:
+        """创建桶（COS：桶名须带 ``-appid`` 后缀）。"""
+        try:
+            self.client.create_bucket(Bucket=bucket)
+        except CustomException:
+            raise
+        except Exception as e:
+            logger.exception('COS 创建桶失败')
+            raise CustomException(msg=f"COS 创建桶失败: {e}") from e
 
     def _sync_get_url(self, remote_path: str, expire: int) -> str:
         """生成预签名 URL

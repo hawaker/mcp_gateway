@@ -5,15 +5,23 @@
 同步操作经基类 asyncio.to_thread 包装，不阻塞事件循环。
 用完由调用方调用 close() 释放连接。
 """
+
+from __future__ import annotations
+
 import os
 import stat
 from datetime import UTC, datetime
-
-import paramiko
+from typing import TYPE_CHECKING
 
 from app.core.exceptions import CustomException
 from app.core.logger import logger
 from app.modules.task.storage.core.base import BaseStorageAdapter, SftpAdvancedConfig, StorageObject, StorageProtocol
+from app.utils.lazy_sdk import lazy_module
+
+if TYPE_CHECKING:
+    import paramiko
+else:
+    paramiko = lazy_module("paramiko")
 
 
 class SftpStorageAdapter(BaseStorageAdapter):

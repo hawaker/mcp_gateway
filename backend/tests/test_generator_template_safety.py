@@ -11,6 +11,7 @@
 """
 
 import ast
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -544,3 +545,150 @@ async def test_all_templates_pass_structural_gate_with_hostile_text() -> None:
         assert_python_structure(real, ref, filename=name)
         checked += 1
     assert checked == 13  # 10 主模板 + 3 子表模板
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 方言类型与跨方言 JSON（issue #542）
+#   生成的 import 必须可解析；jsonb 必须走基类 JSONType 而非硬编码 JSONB。
+#   注意：GenConstant.DB_TO_SQLALCHEMY 按 settings.DATABASE_TYPE 条件定义，
+#   因此 PG 专有类型用 DATABASE_TYPE=postgres 的子进程验证（本进程 conftest 设为 sqlite）。
+# ══════════════════════════════════════════════════════════════════════════════
+
+_BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+_POSTGRES_PROBE = r'''
+import asyncio, json
+from app.modules.generator.gencode.schema import GenTableColumnOutSchema, GenTableOutSchema
+from app.modules.generator.gencode.jinja2_template_util import Jinja2TemplateUtil
+
+
+def _col(name, column_type, python_type, **kw):
+    data = dict(table_id=1, column_name=name, column_comment="x", column_type=column_type, column_length=None,
+                column_default="", is_pk=False, is_increment=False, is_nullable=True, is_unique=False,
+                python_type=python_type, python_field=name, is_insert=True, is_edit=True, is_list=True,
+                is_query=False, query_type=None, html_type="input", dict_type="", sort=1)
+    data.update(kw)
+    return GenTableColumnOutSchema(**data)
+
+
+def _table(cols):
+    return GenTableOutSchema(table_name="gen_demo", table_comment="示例", class_name="Demo",
+        package_name="module_gen", module_name="demo", business_name="demo", function_name="示例",
+        columns=cols, parent_menu_id=None, sub_table_name=None, sub_table_fk_name=None,
+        pk_column=cols[0], sub=False, sub_table=None)
+
+
+result = {}
+for ct in ("jsonb", "inet", "cidr", "macaddr", "bit", "tsvector", "tsquery", "point"):
+    table = _table([_col("payload", ct, "dict")])
+    result[ct] = {
+        "imports": Jinja2TemplateUtil.get_model_import_list(table),
+        "type": Jinja2TemplateUtil.get_sqlalchemy_type(table.columns[0]),
+    }
+
+
+async def _render_model():
+    table = _table([_col("id", "integer", "int", is_pk=True, is_increment=True, sort=1),
+                    _col("payload", "jsonb", "dict", sort=2)])
+    env = Jinja2TemplateUtil.get_env()
+    ctx = Jinja2TemplateUtil.prepare_context(table)
+    for tpl in Jinja2TemplateUtil.get_template_list():
+        src = await env.get_template(tpl).render_async(**ctx)
+        if "class Demo" in src and "__tablename__" in src:
+            return src
+    return ""
+
+
+result["model_source"] = asyncio.run(_render_model())
+print("__RESULT__" + json.dumps(result))
+'''
+
+
+def _postgres_dialect_probe() -> dict[str, Any]:
+    """在 DATABASE_TYPE=postgres 的子进程里跑生成器，返回各类型的 import 与渲染结果。"""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "DATABASE_TYPE": "postgres"}
+    proc = subprocess.run(
+        [sys.executable, "-c", _POSTGRES_PROBE],
+        cwd=_BACKEND_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert proc.returncode == 0, f"PG 方言子进程失败: {proc.stderr[-2000:]}"
+    line = next(line for line in proc.stdout.splitlines() if line.startswith("__RESULT__"))
+    return json.loads(line[len("__RESULT__") :])
+
+
+def test_dialect_type_import_map_targets_resolve() -> None:
+    """DIALECT_TYPE_IMPORTS 的每个 (模块, 类名) 都必须真实存在（几何类型是可选依赖，跳过）。"""
+    import importlib
+
+    from app.modules.generator.gencode.template_safety import DIALECT_TYPE_IMPORTS
+
+    for type_name, (module, symbol) in DIALECT_TYPE_IMPORTS.items():
+        if module == "geoalchemy2":
+            continue
+        mod = importlib.import_module(module)
+        assert hasattr(mod, symbol), f"{type_name}: {module}.{symbol} 不存在"
+
+
+def test_postgres_dialect_types_emit_valid_imports() -> None:
+    """PG 方言下：方言类型从正确模块导入，且不产生 `from sqlalchemy import <方言类型>`。"""
+    result = _postgres_dialect_probe()
+    expected = {
+        "jsonb": ("app.core.base_model", "JSONType"),
+        "inet": ("sqlalchemy.dialects.postgresql", "INET"),
+        "cidr": ("sqlalchemy.dialects.postgresql", "CIDR"),
+        "macaddr": ("sqlalchemy.dialects.postgresql", "MACADDR"),
+        "bit": ("sqlalchemy.dialects.postgresql", "BIT"),
+        "tsvector": ("sqlalchemy.dialects.postgresql", "TSVECTOR"),
+        "tsquery": ("sqlalchemy.dialects.postgresql", "TSQUERY"),
+        "point": ("geoalchemy2", "Geometry"),
+    }
+    for column_type, (module, symbol) in expected.items():
+        imports = result[column_type]["imports"]
+        assert f"from {module} import {symbol}" in imports, f"{column_type} 的 import 不正确: {imports}"
+        assert f"from sqlalchemy import {symbol}" not in imports, f"{column_type} 仍产生非法顶层 import"
+
+
+def test_postgres_jsonb_column_renders_cross_dialect_type() -> None:
+    """PG 方言下 jsonb 列渲染为 JSONType（而非 JSONB）。"""
+    result = _postgres_dialect_probe()
+    assert result["jsonb"]["type"] == "JSONType"
+    assert result["bit"]["type"] == "BIT"
+
+
+def test_postgres_rendered_model_imports_cross_dialect_type() -> None:
+    """端到端：含 jsonb 列的模型产物可 ast.parse，且从基类导入 JSONType。"""
+    result = _postgres_dialect_probe()
+    source = result["model_source"]
+    assert source, "未渲染出模型文件"
+    assert "from app.core.base_model import JSONType" in source
+    assert "from sqlalchemy import JSONB" not in source
+    ast.parse(source)
+
+
+def test_json_type_compiles_on_all_supported_dialects() -> None:
+    """JSONType：PG 渲染 JSONB，SQLite/MySQL 渲染 JSON（issue #542 的核心承诺）。"""
+    from sqlalchemy import Column, Integer, MetaData, Table
+    from sqlalchemy.dialects import mysql, postgresql, sqlite
+    from sqlalchemy.schema import CreateTable
+
+    from app.core.base_model import JSONType
+
+    metadata = MetaData()
+    table = Table("t_json_type", metadata, Column("id", Integer, primary_key=True), Column("payload", JSONType))
+
+    def _ddl(dialect: Any) -> str:
+        return " ".join(str(CreateTable(table).compile(dialect=dialect)).split())
+
+    assert "payload JSONB" in _ddl(postgresql.dialect())
+    for dialect in (sqlite.dialect(), mysql.dialect()):
+        ddl = _ddl(dialect)
+        assert "payload JSON" in ddl, ddl
+        assert "JSONB" not in ddl, ddl

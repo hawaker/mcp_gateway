@@ -289,7 +289,7 @@ async function loadData() {
 async function loadNotices() {
   try {
     const res = await NoticeAPI.getPage({ page_no: 1, page_size: 3, status: 1 })
-    recentNotices.value = res.list || []
+    recentNotices.value = res.items || []
   }
   catch { /* silent */ }
 }

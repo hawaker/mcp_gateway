@@ -52,7 +52,7 @@ async function loadComments() {
     return
   try {
     const res = await TicketAPI.getComments(ticketId.value, { page_no: commentPage.page_no, page_size: commentPage.page_size })
-    comments.value = res.list || []
+    comments.value = res.items || []
     commentTotal.value = res.total || 0
   }
   catch (e) {

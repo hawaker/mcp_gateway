@@ -222,11 +222,29 @@
             />
           </ElFormItem>
           <ElFormItem label="模型 ID" prop="model_id">
-            <ElInput
-              v-model="form.model_id"
-              placeholder="如：gpt-4o-mini / deepseek-chat"
-              clearable
-            />
+            <div class="w-full">
+              <div class="flex items-center gap-2">
+                <ElInput
+                  v-model="form.model_id"
+                  placeholder="如：gpt-4o-mini / deepseek-chat"
+                  clearable
+                  class="flex-1"
+                />
+                <ElButton :loading="probingModels" @click="fetchAvailableModels">拉取模型</ElButton>
+                <ElButton :loading="testingConnection" @click="testConnection">测试连通</ElButton>
+              </div>
+              <div v-if="availableModels.length" class="mt-1.5 flex flex-wrap gap-1">
+                <ElTag
+                  v-for="m in availableModels"
+                  :key="m.id"
+                  size="small"
+                  class="cursor-pointer"
+                  @click="form.model_id = m.id"
+                >
+                  {{ m.id }}
+                </ElTag>
+              </div>
+            </div>
           </ElFormItem>
           <ElFormItem label="Temperature" prop="temperature">
             <ElSlider
@@ -274,6 +292,7 @@ import AiChatAPI, {
   type AiModelConfigInput,
   type AiModelConfigItem,
   type AiModelConfigList,
+  type AiModelOption,
 } from "@/api/module_ai/chat";
 import FaDialog from "@/components/modal/fa-dialog/index.vue";
 
@@ -311,6 +330,55 @@ const form = reactive<AiModelConfigItem>({
   temperature: 0.7,
   created_time: null,
 });
+
+// 模型探测：拉取可用模型 / 连通性测试（按表单中填写、尚未保存的参数）
+const probingModels = ref(false);
+const testingConnection = ref(false);
+const availableModels = ref<AiModelOption[]>([]);
+
+async function fetchAvailableModels() {
+  if (!form.base_url || !form.api_key) {
+    ElMessage.warning("请先填写 Base URL 与 API Key");
+    return;
+  }
+  probingModels.value = true;
+  try {
+    const res = await AiChatAPI.listAvailableModels({
+      base_url: form.base_url,
+      api_key: form.api_key,
+    });
+    availableModels.value = res.data.data || [];
+    if (availableModels.value.length) {
+      ElMessage.success(`获取到 ${availableModels.value.length} 个可用模型，点击标签即可填入`);
+    } else {
+      ElMessage.warning("接口未返回可用模型");
+    }
+  } catch {
+    // 统一错误提示已由 http 层处理
+  } finally {
+    probingModels.value = false;
+  }
+}
+
+async function testConnection() {
+  if (!form.base_url || !form.api_key || !form.model_id) {
+    ElMessage.warning("请先填写 Base URL、API Key 与模型 ID");
+    return;
+  }
+  testingConnection.value = true;
+  try {
+    const res = await AiChatAPI.testModelConnection({
+      base_url: form.base_url,
+      api_key: form.api_key,
+      model_id: form.model_id,
+    });
+    ElMessage.success(`连接成功，往返 ${res.data.data?.latency_ms ?? "-"} ms`);
+  } catch {
+    // 统一错误提示已由 http 层处理
+  } finally {
+    testingConnection.value = false;
+  }
+}
 
 // 常用 Base URL 预设 - 提升用户输入效率
 const baseUrlPresets = [

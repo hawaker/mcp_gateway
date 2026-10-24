@@ -210,7 +210,17 @@
                 v-loading="activeTab.loading"
                 class="min-h-0 flex-1"
               >
-                <div class="mb-2 text-[13px] text-[#909399]">存储桶（账号下全部，点击进入）</div>
+                <div class="mb-2 flex items-center justify-between text-[13px] text-[#909399]">
+                  <span>存储桶（账号下全部，点击进入）</span>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    plain
+                    :loading="bucketCreating"
+                    @click="createBucket"
+                    >新建桶</el-button
+                  >
+                </div>
                 <div
                   v-for="b in objectBuckets"
                   :key="b"
@@ -1172,6 +1182,32 @@ async function createDir() {
   });
   ElMessage.success("创建成功");
   load();
+}
+
+// ─── 对象存储：新建桶 ──────────────────────────────────────────────
+const bucketCreating = ref(false);
+
+async function createBucket() {
+  const tab = activeTab.value;
+  if (!tab) return;
+  const { value } = await ElMessageBox.prompt(
+    "请输入存储桶名称（COS 需带 -appid 后缀）",
+    "新建存储桶",
+    {
+      inputPattern: /^[^\s/\\]{1,63}$/,
+      inputErrorMessage: "桶名需 1-63 个字符，且不能包含空格或斜杠",
+    }
+  ).catch(() => ({ value: undefined as string | undefined }));
+  const name = value?.trim();
+  if (!name) return;
+  bucketCreating.value = true;
+  try {
+    await StorageAPI.createBucket({ source_id: tab.nodeId, bucket: name });
+    ElMessage.success("创建桶成功");
+    await loadTab(tab);
+  } finally {
+    bucketCreating.value = false;
+  }
 }
 
 // ─── 文件操作：下载 ────────────────────────────────────────────────

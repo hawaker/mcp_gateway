@@ -1,7 +1,7 @@
-from datetime import UTC, datetime
-from typing import Any
+from __future__ import annotations
 
-from obs import ObsClient
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from app.core.exceptions import CustomException
 from app.core.logger import logger
@@ -13,6 +13,12 @@ from app.modules.task.storage.core.base import (
     StorageProtocol,
     normalize_endpoint,
 )
+from app.utils.lazy_sdk import lazy_module
+
+if TYPE_CHECKING:
+    import obs
+else:
+    obs = lazy_module("obs")
 
 
 class ObsStorageAdapter(BaseStorageAdapter):
@@ -123,7 +129,7 @@ class ObsStorageAdapter(BaseStorageAdapter):
         if not self.config.endpoint:
             raise CustomException(msg="OBS 存储源必须配置 endpoint")
         adv = ObsAdvancedConfig(**self.config.advanced_config)
-        self.client = ObsClient(
+        self.client = obs.ObsClient(
             access_key_id=self.config.username or "",
             secret_access_key=self.config.password or "",
             server=normalize_endpoint(self.config.endpoint, self.config.scheme),
@@ -367,6 +373,20 @@ class ObsStorageAdapter(BaseStorageAdapter):
         except Exception:
             logger.exception('OBS 桶列表失败')
             raise
+
+    def _sync_create_bucket(self, bucket: str) -> None:
+        """创建桶（OBS SDK 不抛异常，按返回状态码判断）。"""
+        try:
+            resp = self.client.createBucket(bucketName=bucket)
+            status = int(getattr(resp, "status", 0) or 0)
+            if status >= 300:
+                reason = getattr(resp, "errorMessage", "") or status
+                raise CustomException(msg=f"OBS 创建桶失败: {reason}")
+        except CustomException:
+            raise
+        except Exception as e:
+            logger.exception('OBS 创建桶失败')
+            raise CustomException(msg=f"OBS 创建桶失败: {e}") from e
 
     def _sync_get_url(self, remote_path: str, expire: int) -> str:
         try:

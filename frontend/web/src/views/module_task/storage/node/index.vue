@@ -25,15 +25,26 @@
         @refresh="refreshData"
       >
         <template #left>
-          <FaTableHeaderLeft
-            :remove-ids="selectedIds"
-            :perm-create="['module_task:storage:node:create']"
-            :perm-delete="['module_task:storage:node:delete']"
-            :delete-loading="batchDeleting"
-            :create-loading="createLoading"
-            @add="handleAdd"
-            @delete="handleBatchDelete"
-          />
+          <div class="flex items-center gap-2">
+            <FaTableHeaderLeft
+              :remove-ids="selectedIds"
+              :perm-create="['module_task:storage:node:create']"
+              :perm-delete="['module_task:storage:node:delete']"
+              :delete-loading="batchDeleting"
+              :create-loading="createLoading"
+              @add="handleAdd"
+              @delete="handleBatchDelete"
+            />
+            <ElButton :loading="exporting" @click="handleExportConfig">导出配置</ElButton>
+            <ElButton :loading="importing" @click="triggerImportConfig">导入配置</ElButton>
+            <input
+              ref="importInputRef"
+              type="file"
+              accept=".json,application/json"
+              class="hidden"
+              @change="handleImportFile"
+            />
+          </div>
         </template>
       </FaTableHeader>
 
@@ -190,6 +201,7 @@ import { useRouter } from "vue-router";
 import { ElTag } from "element-plus";
 import { useCrudForm } from "@/hooks/core/useCrudForm";
 import { resolveStatusColumns, renderTableOperationCell, type TableOperationAction } from "@utils";
+import { saveAs } from "file-saver";
 import NodeAPI, {
   type AdvancedFieldDef,
   type SourceForm,
@@ -477,6 +489,65 @@ async function handleTestConfig() {
 // ─── 对话框状态 ───
 const { dialogVisible } = useCrudDialog();
 
+// ─── 配置导出 / 导入（不含凭据；导入按名称去重）────────────────────
+const exporting = ref(false);
+const importing = ref(false);
+const importInputRef = ref<HTMLInputElement>();
+
+async function handleExportConfig() {
+  exporting.value = true;
+  try {
+    const res = await NodeAPI.exportConfig();
+    const payload = res.data.data;
+    saveAs(
+      new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
+      `storage-nodes-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`
+    );
+    ElMessage.success("已导出（不含凭据，导入后需重填密码）");
+  } finally {
+    exporting.value = false;
+  }
+}
+
+function triggerImportConfig() {
+  importInputRef.value?.click();
+}
+
+async function handleImportFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  let payload: { version?: number; nodes?: Record<string, unknown>[] };
+  try {
+    payload = JSON.parse(await file.text());
+  } catch {
+    ElMessage.error("文件不是合法的 JSON");
+    return;
+  }
+  if (!Array.isArray(payload.nodes)) {
+    ElMessage.error("文件内容缺少 nodes 数组");
+    return;
+  }
+  importing.value = true;
+  try {
+    const res = await NodeAPI.importConfig({
+      version: payload.version ?? 1,
+      exported_at: "",
+      nodes: payload.nodes,
+    });
+    const result = res.data.data;
+    ElMessage.success(
+      `导入完成：新增 ${result?.created ?? 0}，跳过 ${result?.skipped ?? 0}（同名已存在），无效 ${result?.invalid ?? 0}`
+    );
+    refreshData();
+  } catch {
+    // 统一错误提示由 http 层处理
+  } finally {
+    importing.value = false;
+  }
+}
+
 const detailFormData = ref<SourceTable>({} as SourceTable);
 
 const sourceDetailItems: import("@/components/display/fa-descriptions/index.vue").DescriptionsItem[] =
@@ -691,7 +762,10 @@ const sourceDialogFormItems = computed<FormItem[]>(() => {
         props: {
           placeholder: "请选择或输入区域",
           // ElOption 只认 { label, value }：直接传字符串会展开成下标属性、value 缺省被布尔转为 false，导致选项显示 "false"
-          options: (regionDict[p]?.options ?? []).map((region) => ({ label: region, value: region })),
+          options: (regionDict[p]?.options ?? []).map((region) => ({
+            label: region,
+            value: region,
+          })),
           filterable: true,
           allowCreate: true,
         },

@@ -265,6 +265,98 @@
           </ElCard>
         </div>
       </ElTabPane>
+
+      <ElTabPane label="键空间浏览" name="2">
+        <ElCard shadow="hover" class="fa-card">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-[13px] text-[#909399]">逻辑库</span>
+            <ElSelect v-model="redisDb" style="width: 160px" @change="scanRedisKeys(true)">
+              <ElOption
+                v-for="item in redisDatabases"
+                :key="item.db"
+                :label="`db${item.db}（${item.keys} 键）`"
+                :value="item.db"
+              />
+            </ElSelect>
+            <ElInput
+              v-model="redisPattern"
+              placeholder="键模式，如 fastapiadmin:*"
+              style="width: 260px"
+              clearable
+              @keyup.enter="scanRedisKeys(true)"
+            />
+            <ElButton type="primary" :loading="redisLoading" @click="scanRedisKeys(true)"
+              >扫描</ElButton
+            >
+            <ElButton :disabled="!redisCursor" @click="scanRedisKeys(false)">加载更多</ElButton>
+            <span class="text-xs text-[#909399]"
+              >只读浏览；敏感键（token/session 等）的值自动脱敏</span
+            >
+          </div>
+          <ElTable
+            v-loading="redisLoading"
+            :data="redisKeys"
+            class="mt-3"
+            max-height="52vh"
+            @row-click="openRedisValue"
+          >
+            <ElTableColumn prop="key" label="键名" min-width="320" show-overflow-tooltip />
+            <ElTableColumn prop="type" label="类型" width="110" />
+            <ElTableColumn label="TTL" width="120">
+              <template #default="{ row }">
+                {{ row.ttl === -1 ? "永不过期" : row.ttl === -2 ? "不存在" : `${row.ttl}s` }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="操作" width="90" align="center" fixed="right">
+              <template #default="{ row }">
+                <ElButton link type="primary" @click.stop="openRedisValue(row)">查看</ElButton>
+              </template>
+            </ElTableColumn>
+          </ElTable>
+          <ElEmpty
+            v-if="!redisLoading && !redisKeys.length"
+            description="没有扫描到键（可换逻辑库或模式再试）"
+            :image-size="64"
+          />
+        </ElCard>
+
+        <ElDialog
+          v-model="redisValueVisible"
+          :title="`键详情：${redisValue?.key ?? ''}`"
+          width="760px"
+        >
+          <ElDescriptions :column="3" border size="small">
+            <ElDescriptionsItem label="类型">{{ redisValue?.type ?? "-" }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="TTL">
+              {{
+                redisValue?.ttl === -1
+                  ? "永不过期"
+                  : redisValue?.ttl === -2
+                    ? "不存在"
+                    : `${redisValue?.ttl ?? "-"}s`
+              }}
+            </ElDescriptionsItem>
+            <ElDescriptionsItem label="大小">
+              {{ redisValue?.size == null ? "-" : `${redisValue.size} B` }}
+            </ElDescriptionsItem>
+          </ElDescriptions>
+          <ElAlert
+            v-if="redisValue?.masked"
+            class="mt-3"
+            type="warning"
+            :closable="false"
+            title="该键命中敏感模式，值已脱敏"
+          />
+          <ElAlert
+            v-else-if="redisValue?.truncated"
+            class="mt-3"
+            type="info"
+            :closable="false"
+            title="值过大，仅展示前一部分"
+          />
+          <ElInput class="mt-3" type="textarea" :rows="12" readonly :model-value="redisValueText" />
+        </ElDialog>
+      </ElTabPane>
     </ElTabs>
   </div>
 </template>
@@ -276,7 +368,10 @@ import CacheAPI, {
   type CacheInfo,
   type CacheForm,
   type CacheMonitor,
+  type RedisDatabase,
   type RedisInfo,
+  type RedisKeyMeta,
+  type RedisValue,
 } from "@/api/module_monitor/cache";
 import { echarts } from "@/plugins/echarts";
 import { useWindowSize } from "@vueuse/core";
@@ -294,6 +389,66 @@ const cacheKeys = ref<string[]>([]);
 const loading = ref(true);
 const subLoading = ref(false);
 const nowCacheName = ref("");
+
+// ─── Redis 键空间浏览（只读）────────────────────────────────────────
+const redisDatabases = ref<RedisDatabase[]>([]);
+const redisDb = ref(0);
+const redisPattern = ref("*");
+const redisKeys = ref<RedisKeyMeta[]>([]);
+const redisCursor = ref(0);
+const redisLoading = ref(false);
+const redisValueVisible = ref(false);
+const redisValue = ref<RedisValue | null>(null);
+const redisValueText = computed(() =>
+  redisValue.value ? JSON.stringify(redisValue.value.value, null, 2) : ""
+);
+
+async function loadRedisDatabases() {
+  const res = await CacheAPI.getRedisDatabases();
+  redisDatabases.value = res.data.data || [];
+  if (
+    redisDatabases.value.length &&
+    !redisDatabases.value.some((item) => item.db === redisDb.value)
+  ) {
+    redisDb.value = redisDatabases.value[0]!.db;
+  }
+}
+
+async function scanRedisKeys(reset: boolean) {
+  if (reset) {
+    redisKeys.value = [];
+    redisCursor.value = 0;
+  }
+  redisLoading.value = true;
+  try {
+    const res = await CacheAPI.scanRedisKeys({
+      db: redisDb.value,
+      pattern: redisPattern.value || "*",
+      cursor: reset ? 0 : redisCursor.value,
+      count: 100,
+    });
+    const page = res.data.data;
+    const incoming = page?.keys || [];
+    redisKeys.value = reset ? incoming : [...redisKeys.value, ...incoming];
+    redisCursor.value = page?.cursor ?? 0;
+  } finally {
+    redisLoading.value = false;
+  }
+}
+
+async function openRedisValue(row: unknown) {
+  const target = row as RedisKeyMeta;
+  const res = await CacheAPI.getRedisValue({ db: redisDb.value, key: target.key });
+  redisValue.value = res.data.data ?? null;
+  redisValueVisible.value = true;
+}
+
+watch(activeTab, async (tab) => {
+  if (tab === "2" && !redisDatabases.value.length) {
+    await loadRedisDatabases();
+    await scanRedisKeys(true);
+  }
+});
 
 const commandstats = ref<HTMLElement | null>(null);
 const usedmemory = ref<HTMLElement | null>(null);

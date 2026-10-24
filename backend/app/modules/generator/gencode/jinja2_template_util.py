@@ -17,6 +17,7 @@ from .schema import (
     GenTableOutSchema,
 )
 from .template_safety import (
+    DIALECT_TYPE_IMPORTS,
     column_type_base,
     escape_template_text,
     html_attr,
@@ -696,9 +697,11 @@ class Jinja2TemplateUtil:
                 continue
             if column.column_type:
                 data_type = cls.get_db_type(column.column_type)
-                if data_type in GenConstant.COLUMNTYPE_GEOMETRY:
-                    import_list.add("from geoalchemy2 import Geometry")
-                import_list.add(f"from sqlalchemy import {StringUtil.get_mapping_value_by_key_ignore_case(GenConstant.DB_TO_SQLALCHEMY, data_type)}")
+                # 非顶层导出的类型（JSONB/INET/CIDR/MACADDR/BIT/TSVECTOR/TSQUERY/Geometry 等）
+                # 走明确的模块映射，绝不再拼 `from sqlalchemy import <方言类型>`（非法语句）
+                mapped = StringUtil.get_mapping_value_by_key_ignore_case(GenConstant.DB_TO_SQLALCHEMY, data_type)
+                module, type_name = DIALECT_TYPE_IMPORTS.get(mapped, ("sqlalchemy", mapped))
+                import_list.add(f"from {module} import {type_name}")
             # 处理datetime类型的导入
             if column.python_type and column.python_type in GenConstant.TYPE_DATE:
                 if column.python_type == "datetime":

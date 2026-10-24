@@ -1,6 +1,7 @@
-from datetime import UTC, datetime, timedelta
+from __future__ import annotations
 
-import alibabacloud_oss_v2 as oss
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from app.core.exceptions import CustomException
 from app.core.logger import logger
@@ -12,6 +13,12 @@ from app.modules.task.storage.core.base import (
     StorageProtocol,
     normalize_endpoint,
 )
+from app.utils.lazy_sdk import lazy_module
+
+if TYPE_CHECKING:
+    import alibabacloud_oss_v2 as oss
+else:
+    oss = lazy_module("alibabacloud_oss_v2")
 
 
 class OssStorageAdapter(BaseStorageAdapter):
@@ -200,6 +207,16 @@ class OssStorageAdapter(BaseStorageAdapter):
         except Exception:
             logger.exception('OSS 桶列表失败')
             raise
+
+    def _sync_create_bucket(self, bucket: str) -> None:
+        """创建桶（OSS v2：put_bucket）。"""
+        try:
+            self.client.put_bucket(oss.PutBucketRequest(bucket=bucket))
+        except CustomException:
+            raise
+        except Exception as e:
+            logger.exception('OSS 创建桶失败')
+            raise CustomException(msg=f"OSS 创建桶失败: {e}") from e
 
     def _sync_get_url(self, remote_path: str, expire: int) -> str | None:
         try:
