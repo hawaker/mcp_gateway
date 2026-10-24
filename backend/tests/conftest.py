@@ -72,10 +72,23 @@ async def _redis_delete(*names: bytes) -> int:
     return count
 
 
-def _redis_keys(pattern: bytes | None = None) -> list[bytes]:
-    if pattern == b"*" or pattern is None:
+def _key_text(key: bytes | str) -> str:
+    if isinstance(key, bytes):
+        return key.decode()
+    return key
+
+
+def _redis_keys(pattern: bytes | str | None = None) -> list[bytes | str]:
+    """业务 token 用字符串前缀。其他字符串模式仍抛 TypeError，RedisCURD 会当成空结果。"""
+    if pattern is None or pattern in {b"*", "*"}:
         return list(_mock_redis_store.keys())
-    return [k for k in _mock_redis_store if pattern == b"*" or k.startswith(pattern.replace(b"*", b""))]
+    if isinstance(pattern, str):
+        if pattern.startswith("mcp:biz-token"):
+            prefix = pattern.replace("*", "")
+            return [key for key in _mock_redis_store if _key_text(key).startswith(prefix)]
+        raise TypeError("mock redis keys() does not match this string pattern")
+    needle = pattern.replace(b"*", b"")
+    return [key for key in _mock_redis_store if isinstance(key, bytes) and key.startswith(needle)]
 
 
 def _redis_exists(*names: bytes) -> int:

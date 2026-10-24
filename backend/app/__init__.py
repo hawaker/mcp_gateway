@@ -80,10 +80,17 @@ def register_exceptions(app: FastAPI) -> None:
 
 def register_routers(app: FastAPI) -> None:
     from app.api.v1.routers import api_v1
+
     app.include_router(api_v1)
 
     from app.core.discover import dynamic_router
+
     dynamic_router.init_app(app)
+
+    # MCP 凭证不是管理员会话，挂在应用根上，不进 api_v1。
+    from app.modules.mcp_gateway.runtime.app import mount_mcp_runtime
+
+    mount_mcp_runtime(app)
 
 
 def register_static(app: FastAPI) -> None:
