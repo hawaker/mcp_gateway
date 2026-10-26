@@ -13,6 +13,7 @@ import httpx
 
 from app.modules.mcp_gateway.auth.extract import TokenBundle, extract_token, resolve_url
 from app.modules.mcp_gateway.auth.interactive import InteractiveAuth
+from app.modules.mcp_gateway.auth.migrate_rule import lift_custom_request_from_rule
 from app.modules.mcp_gateway.auth.model import AuthConfigModel
 from app.modules.mcp_gateway.auth.refresh import run_under_token_lock
 from app.modules.mcp_gateway.binding.model import BizBindingModel
@@ -219,22 +220,47 @@ class AuthClient:
             return "POST", url, {"json": {self.system.uid_field: binding.uid_value}}
 
         kwargs: dict[str, Any] = {}
-        query = self._section("query")
-        body = self._section("json")
-        form = self._section("form")
-        if query is not None:
-            kwargs["params"] = self._render_mapping(query, token=None)
-        if form is not None:
-            kwargs["data"] = self._render_mapping(form, token=None)
-        elif body is not None:
-            kwargs["json"] = self._render_value(body, token=None)
-        if self.auth.method == "basic":
+        if self.auth.method == "custom":
+            headers, query, body_type, body = self._custom_request_shape()
+            if headers:
+                kwargs["headers"] = self._render_mapping(headers, token=None)
+            if query:
+                kwargs["params"] = self._render_mapping(query, token=None)
+            if body_type == "form" and body is not None:
+                kwargs["data"] = self._render_mapping(body, token=None)
+            elif body_type == "json" and body is not None:
+                kwargs["json"] = self._render_value(body, token=None)
+        elif self.auth.method == "basic":
+            query = self._section("query")
+            json_body = self._section("json")
+            form = self._section("form")
+            if query is not None:
+                kwargs["params"] = self._render_mapping(query, token=None)
+            if form is not None:
+                kwargs["data"] = self._render_mapping(form, token=None)
+            elif json_body is not None:
+                kwargs["json"] = self._render_value(json_body, token=None)
             kwargs["auth"] = httpx.BasicAuth(
                 self.auth.username or "",
                 CryptoUtil.decrypt_or_keep(self.auth.password_encrypted),
             )
         http_method = str(self.auth.http_method or "GET").upper()
         return http_method, url, kwargs
+
+    def _custom_request_shape(
+        self,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str, dict[str, Any] | None]:
+        headers = self.auth.headers if isinstance(self.auth.headers, dict) else None
+        query = self.auth.query if isinstance(self.auth.query, dict) else None
+        body_type = self.auth.body_type
+        body = self.auth.body if isinstance(self.auth.body, dict) else None
+        empty = not headers and not query and body_type is None and body is None
+        if empty:
+            lifted_headers, lifted_query, lifted_type, lifted_body, _ = lift_custom_request_from_rule(
+                self.auth.rule or {}
+            )
+            return lifted_headers, lifted_query, lifted_type, lifted_body
+        return headers, query, body_type or "none", body
 
     async def _send_business(
         self,

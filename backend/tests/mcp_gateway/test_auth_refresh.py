@@ -77,6 +77,10 @@ def _auth(
     username: str | None = None,
     password: str | None = None,
     rule: dict[str, Any] | None = None,
+    headers: dict[str, Any] | None = None,
+    query: dict[str, Any] | None = None,
+    body_type: str | None = None,
+    body: dict[str, Any] | None = None,
 ) -> AuthConfigModel:
     return AuthConfigModel(
         id=5,
@@ -88,6 +92,10 @@ def _auth(
         http_method=http_method,
         username=username,
         password_encrypted=password,
+        headers=headers,
+        query=query,
+        body_type=body_type,
+        body=body,
     )
 
 
@@ -284,12 +292,25 @@ def _placed(request: httpx.Request, place: str) -> dict[str, str]:
 async def test_custom_login_puts_placeholders_where_the_config_says(place: str) -> None:
     redis = ExpiringRedis()
     upstream = _Upstream(redis, [200])
-    rule = dict(_TOKEN_RULE)
-    rule[place] = dict(_TEMPLATE)
+    kwargs: dict[str, Any] = {
+        "method": "custom",
+        "url": "https://auth.example.com/login",
+        "http_method": _PLACES[place],
+        "rule": dict(_TOKEN_RULE),
+    }
+    if place == "query":
+        kwargs["query"] = dict(_TEMPLATE)
+        kwargs["body_type"] = "none"
+    elif place == "json":
+        kwargs["body_type"] = "json"
+        kwargs["body"] = dict(_TEMPLATE)
+    else:
+        kwargs["body_type"] = "form"
+        kwargs["body"] = dict(_TEMPLATE)
     client, _cache = _client(
         httpx.MockTransport(upstream.handler),
         redis,
-        auth=_auth(method="custom", url="https://auth.example.com/login", http_method=_PLACES[place], rule=rule),
+        auth=_auth(**kwargs),
     )
 
     response = await client.call(USER_ID, SYSTEM_ID, **_business_call())
@@ -307,6 +328,45 @@ async def test_custom_login_puts_placeholders_where_the_config_says(place: str) 
     assert "from-caller" not in str(login.url)
     _assert_business_identity(upstream.business[0])
     assert upstream.lock_held == [True]
+
+
+async def test_custom_login_sends_configured_headers() -> None:
+    redis = ExpiringRedis()
+    upstream = _Upstream(redis, [200])
+    client, _cache = _client(
+        httpx.MockTransport(upstream.handler),
+        redis,
+        auth=_auth(
+            method="custom",
+            url="https://auth.example.com/login",
+            http_method="POST",
+            headers={"X-Uid": "{{user.uid}}", "X-App": "{{system.client_id}}"},
+            body_type="json",
+            body={"uid": "{{user.uid}}"},
+            rule=dict(_TOKEN_RULE),
+        ),
+    )
+    response = await client.call(USER_ID, SYSTEM_ID, **_business_call())
+    assert response.status_code == 200
+    login = upstream.logins[0]
+    assert login.headers.get("x-uid") == "zhangsan"
+    assert login.headers.get("x-app") == "oa-app"
+    assert json.loads(login.content) == {"uid": "zhangsan"}
+
+
+async def test_custom_login_lifts_legacy_rule_request_sections() -> None:
+    redis = ExpiringRedis()
+    upstream = _Upstream(redis, [200])
+    rule = dict(_TOKEN_RULE)
+    rule["json"] = {"uid": "{{user.uid}}"}
+    client, _cache = _client(
+        httpx.MockTransport(upstream.handler),
+        redis,
+        auth=_auth(method="custom", url="https://auth.example.com/login", http_method="POST", rule=rule),
+    )
+    response = await client.call(USER_ID, SYSTEM_ID, **_business_call())
+    assert response.status_code == 200
+    assert json.loads(upstream.logins[0].content) == {"uid": "zhangsan"}
 
 
 async def test_basic_login_uses_the_system_account_not_the_person() -> None:
