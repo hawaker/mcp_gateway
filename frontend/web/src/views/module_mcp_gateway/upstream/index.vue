@@ -107,7 +107,8 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessage } from "element-plus";
+import { ElMessage, ElTag } from "element-plus";
+import { h } from "vue";
 import UpstreamAPI, {
   type UpstreamForm,
   type UpstreamPageQuery,
@@ -125,8 +126,11 @@ defineOptions({
   inheritAttrs: false,
 });
 
-function selectedText(selected?: boolean) {
-  return selected ? "已选用" : "未选用";
+function selectedStatusTag(selected?: boolean) {
+  if (selected) {
+    return h(ElTag, { type: "success", effect: "dark", size: "small" }, () => "开启");
+  }
+  return h(ElTag, { type: "info", effect: "plain", size: "small" }, () => "关闭");
 }
 
 const showSearch = ref(true);
@@ -373,13 +377,17 @@ const toolUpstreamLabel = ref("");
 const refreshLoading = ref(false);
 
 function toolActions(row: UpstreamToolTable): TableOperationAction[] {
+  const on = Boolean(row.selected);
   return [
     {
-      key: row.selected ? "unselect" : "select",
-      label: row.selected ? "取消选用" : "选用",
-      artType: "edit",
+      key: on ? "close" : "open",
+      label: on ? "关闭" : "开启",
+      // 开启中：红色「关闭」；已关闭：绿色「开启」，避免两态同色图标
+      artType: on ? "delete" : "edit",
+      icon: on ? "ri:toggle-fill" : "ri:toggle-line",
+      iconColor: on ? "var(--el-color-danger)" : "var(--el-color-success)",
       perm: "module_mcp_gateway:upstream:update",
-      run: () => void setSelected(row, !row.selected),
+      run: () => void setSelected(row, !on),
     },
   ];
 }
@@ -404,9 +412,10 @@ const {
       { prop: "external_name", label: "外部名称", minWidth: 180, showOverflowTooltip: true },
       {
         prop: "selected",
-        label: "选用",
+        label: "状态",
         width: 88,
-        formatter: (row: UpstreamToolTable) => selectedText(row.selected),
+        align: "center",
+        formatter: (row: UpstreamToolTable) => selectedStatusTag(row.selected),
       },
       {
         prop: "input_schema",
@@ -418,7 +427,7 @@ const {
       {
         prop: "operation",
         label: "操作",
-        width: 110,
+        width: 90,
         fixed: "right",
         align: "center",
         formatter: (row: UpstreamToolTable) =>
