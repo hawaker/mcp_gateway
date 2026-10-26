@@ -52,6 +52,13 @@
       @close="handleCloseDialog"
       @confirm="handleSubmit()"
     >
+      <PlaceholderHelp
+        :title="REST_PLACEHOLDER_HELP.title"
+        :intro="REST_PLACEHOLDER_HELP.intro"
+        :variables="REST_PLACEHOLDER_HELP.variables"
+        :usage="REST_PLACEHOLDER_HELP.usage"
+        :examples="REST_PLACEHOLDER_HELP.examples"
+      />
       <FaForm
         :key="formRenderKey"
         ref="formRef"
@@ -113,6 +120,8 @@ import type { SearchFormItem } from "@/components/forms/fa-search-bar/index.vue"
 import FaForm from "@/components/forms/fa-form/index.vue";
 import FaTableHeader from "@/components/tables/fa-table-header/index.vue";
 import { renderTableOperationCell, type TableOperationAction } from "@utils";
+import PlaceholderHelp from "../components/PlaceholderHelp.vue";
+import { REST_PLACEHOLDER_HELP } from "../components/placeholderHelpContent";
 
 defineOptions({
   name: "McpGatewayRestTool",
