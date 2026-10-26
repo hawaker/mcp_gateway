@@ -317,7 +317,48 @@ class DebugService:
         headers: Mapping[str, str],
         payload: dict[str, Any],
     ) -> _Exchange:
-        raise CustomException(msg="自定义 SSE 尚未实现")  # Task 2 替换
+        from urllib.parse import urljoin
+
+        get_headers = _merge_custom_headers(headers, for_sse_get=True)
+        post_headers = _merge_custom_headers(headers)
+        client = httpx.AsyncClient(transport=_borrow(self.transport), timeout=30.0)
+        try:
+            async with client.stream("GET", url, headers=get_headers) as stream:
+                if stream.status_code != 200:
+                    body = await stream.aread()
+                    return _Exchange(
+                        stream.status_code,
+                        dict(get_headers),
+                        payload,
+                        _decode_bytes(body),
+                        (),
+                    )
+                event, endpoint = await _read_sse_event(stream)
+                if event != "endpoint" or not endpoint:
+                    raise CustomException(msg="SSE 未返回 endpoint")
+                post_url = urljoin(url, endpoint)
+                posted = await client.post(post_url, headers=post_headers, json=payload)
+                if posted.status_code not in {200, 202}:
+                    return _Exchange(
+                        posted.status_code,
+                        dict(post_headers),
+                        payload,
+                        _decode_response(posted),
+                        (),
+                    )
+                decoded = _decode_response(posted)
+                if isinstance(decoded, dict) and ("result" in decoded or "error" in decoded):
+                    return _Exchange(posted.status_code, dict(post_headers), payload, decoded, ())
+                message_event, message = await _read_sse_event(stream)
+                if message_event != "message":
+                    raise CustomException(msg="SSE 未返回 message")
+                try:
+                    body_any: Any = json.loads(message)
+                except json.JSONDecodeError:
+                    body_any = message
+                return _Exchange(posted.status_code, dict(post_headers), payload, body_any, ())
+        finally:
+            await client.aclose()
 
     async def _group_rpc(
         self,
@@ -535,6 +576,23 @@ def _decode_response(response: httpx.Response) -> Any:
         return response.json()
     except json.JSONDecodeError:
         return response.text
+
+
+async def _read_sse_event(stream: httpx.Response) -> tuple[str, str]:
+    buffer = ""
+    async for chunk in stream.aiter_text():
+        buffer += chunk
+        while "\n\n" in buffer:
+            raw, buffer = buffer.split("\n\n", 1)
+            event = "message"
+            data: list[str] = []
+            for line in raw.split("\n"):
+                if line.startswith("event:"):
+                    event = line.split(":", 1)[1].strip()
+                elif line.startswith("data:"):
+                    data.append(line.split(":", 1)[1].lstrip())
+            return event, "\n".join(data)
+    raise CustomException(msg="SSE 流已关闭")
 
 
 def _decode_bytes(content: bytes) -> Any:

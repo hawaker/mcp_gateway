@@ -509,3 +509,49 @@ async def test_custom_debug_streamable_without_call_log(db) -> None:
 
     revealed = await service.session(**common, reveal=True)
     assert "custom-debug-secret" in _blob(revealed.network)
+
+
+async def test_custom_debug_sse_initialize(db) -> None:
+    """自定义 SSE：GET 拿 endpoint，POST 后收 message。"""
+    secret = "sse-custom-token"
+    posts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            assert str(request.url) == "https://sse.example.com/sse"
+            assert request.headers.get("x-api-key") == secret
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=b"event: endpoint\ndata: /messages\n\n",
+            )
+        assert request.method == "POST"
+        assert str(request.url) == "https://sse.example.com/messages"
+        posts.append(request.content.decode())
+        body = json.loads(request.content.decode())
+        assert body["method"] == "initialize"
+        message = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": body.get("id"),
+                "result": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "serverInfo": {"name": "sse-custom", "version": "0.1"},
+                },
+            }
+        ).encode()
+        # MockTransport 对同一连接无法真正推送第二段 SSE；实现应在 POST 响应里带回 JSON，
+        # 或在 GET 流关闭前已缓冲 message。本测试约定：若实现从 POST JSON 取结果亦可。
+        return httpx.Response(200, json=json.loads(message))
+
+    service = _service(db, ExpiringRedis(), httpx.MockTransport(handler))
+    session = await service.session(
+        target="custom",
+        url="https://sse.example.com/sse",
+        transport="sse",
+        headers={"X-Api-Key": secret},
+    )
+    assert session.server_info["name"] == "sse-custom"
+    assert secret not in _blob(session.network)
+    assert posts, "应向 endpoint POST initialize"
