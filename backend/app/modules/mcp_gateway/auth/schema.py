@@ -3,6 +3,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.base_schema import BaseQueryParam, BaseSchema
+from app.modules.mcp_gateway.auth.migrate_rule import BodyType
 
 AuthMethod = Literal["fixed", "custom", "basic", "interactive"]
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
@@ -22,6 +23,42 @@ def _clean_username(value: str | None) -> str | None:
     return value or None
 
 
+def _clean_str_map(value: dict[str, str] | None) -> dict[str, str] | None:
+    if value is None:
+        return None
+    cleaned: dict[str, str] = {}
+    for key, item in value.items():
+        name = str(key).strip()
+        if not name:
+            raise ValueError("请求头或 Query 的键不能为空")
+        cleaned[name] = "" if item is None else str(item)
+    return cleaned
+
+
+def ensure_custom_request_fields(
+    method: str,
+    headers: dict[str, str] | None,
+    query: dict[str, str] | None,
+    body_type: BodyType | None,
+    body: dict[str, Any] | None,
+) -> tuple[dict[str, str] | None, dict[str, str] | None, BodyType | None, dict[str, Any] | None]:
+    """仅 custom 校验并规范化请求外形；其他方法原样返回。"""
+    if method != "custom":
+        return headers, query, body_type, body
+    headers = _clean_str_map(headers)
+    query = _clean_str_map(query)
+    resolved: BodyType = body_type or "none"
+    if resolved == "none":
+        if body not in (None, {}):
+            raise ValueError("Body 类型为无时不能填写 Body")
+        return headers, query, "none", None
+    if body is None or not isinstance(body, dict) or isinstance(body, list):
+        raise ValueError("JSON 或 Form Body 必须是对象")
+    if resolved == "form":
+        return headers, query, "form", {str(k): "" if v is None else str(v) for k, v in body.items()}
+    return headers, query, "json", dict(body)
+
+
 class AuthConfigCreateSchema(BaseModel):
     """创建一条业务系统鉴权。Basic 的账号密码属于系统，不放在用户上。password 只写不读。"""
 
@@ -33,6 +70,10 @@ class AuthConfigCreateSchema(BaseModel):
     http_method: HttpMethod | None = Field(default=None, description="HTTP 方法")
     username: str | None = Field(default=None, max_length=128, description="Basic 用户名")
     password: str | None = Field(default=None, max_length=512, description="Basic 密码")
+    headers: dict[str, str] | None = Field(default=None, description="自定义请求头")
+    query: dict[str, str] | None = Field(default=None, description="自定义 Query")
+    body_type: BodyType | None = Field(default=None, description="自定义 Body 类型")
+    body: dict[str, Any] | None = Field(default=None, description="自定义 Body")
 
     @field_validator("url")
     @classmethod
@@ -47,6 +88,13 @@ class AuthConfigCreateSchema(BaseModel):
     @model_validator(mode="after")
     def _validate_method_fields(self) -> Self:
         ensure_method_fields(self.method, self.http_method, self.username, self.password)
+        headers, query, body_type, body = ensure_custom_request_fields(
+            self.method, self.headers, self.query, self.body_type, self.body
+        )
+        object.__setattr__(self, "headers", headers)
+        object.__setattr__(self, "query", query)
+        object.__setattr__(self, "body_type", body_type)
+        object.__setattr__(self, "body", body)
         return self
 
 
@@ -61,6 +109,10 @@ class AuthConfigUpdateSchema(BaseModel):
     http_method: HttpMethod | None = Field(default=None, description="HTTP 方法")
     username: str | None = Field(default=None, max_length=128, description="Basic 用户名")
     password: str | None = Field(default=None, max_length=512, description="Basic 密码")
+    headers: dict[str, str] | None = Field(default=None, description="自定义请求头")
+    query: dict[str, str] | None = Field(default=None, description="自定义 Query")
+    body_type: BodyType | None = Field(default=None, description="自定义 Body 类型")
+    body: dict[str, Any] | None = Field(default=None, description="自定义 Body")
 
     @field_validator("url")
     @classmethod
@@ -87,6 +139,10 @@ class AuthConfigOutSchema(BaseSchema):
     rule: dict[str, Any] = Field(description="取值规则")
     http_method: HttpMethod | None = Field(default=None, description="HTTP 方法")
     username: str | None = Field(default=None, description="Basic 用户名")
+    headers: dict[str, str] | None = Field(default=None, description="自定义请求头")
+    query: dict[str, str] | None = Field(default=None, description="自定义 Query")
+    body_type: BodyType | None = Field(default=None, description="自定义 Body 类型")
+    body: dict[str, Any] | None = Field(default=None, description="自定义 Body")
 
 
 class AuthConfigQueryParam(BaseQueryParam):
