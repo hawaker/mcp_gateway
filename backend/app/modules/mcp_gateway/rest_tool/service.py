@@ -53,6 +53,7 @@ _TOOL_FIELDS = (
     "timeout_ms",
     "token_in",
     "token_name",
+    "token_var",
     "enabled",
     "system_id",
 )
@@ -242,9 +243,11 @@ class RestToolService:
                 await transport.aclose()
         bundle = await cache.get(user_id, system.id)
         secrets: list[str] = []
-        # 始终遮住缓存里的业务 access_token；Authorization 里若还有别的 bearer 一并遮住。
-        if bundle is not None and bundle.access_token:
-            secrets.append(bundle.access_token)
+        # 始终遮住缓存里的鉴权变量值。
+        if bundle is not None:
+            for value in bundle.vars.values():
+                if value:
+                    secrets.append(value)
         bearer = _bearer(upstream_request)
         if bearer and bearer not in secrets:
             secrets.append(bearer)

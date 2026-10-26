@@ -14,7 +14,7 @@ from urllib.parse import quote
 from app.modules.mcp_gateway.auth.client import CallerLiteral
 from app.modules.mcp_gateway.auth.extract import resolve_url
 
-_DOUBLE = re.compile(r"\{\{(?:system\.[A-Za-z0-9_]+|user\.uid|user\.attr\.[A-Za-z0-9_]+|token)\}\}")
+_DOUBLE = re.compile(r"\{\{(?:system\.[A-Za-z0-9_]+|user\.uid|user\.attr\.[A-Za-z0-9_]+|auth\.[A-Za-z0-9_]+)\}\}")
 _SINGLE = re.compile(r"\{([A-Za-z0-9_]+)\}")
 
 
@@ -98,17 +98,22 @@ def _place_token(tool: Mapping[str, Any], headers: dict[str, Any], params: dict[
     token_in = str(tool.get("token_in") or "header")
     raw_name = tool.get("token_name")
     name = str(raw_name).strip() if raw_name else ""
+    raw_var = tool.get("token_var")
+    var = str(raw_var).strip() if raw_var else "access_token"
+    if not var:
+        var = "access_token"
+    slot = "{{auth." + var + "}}"
     if token_in == "query":
-        params[name or "token"] = "{{token}}"
+        params[name or "token"] = slot
         return
     if token_in == "body":
-        body[name or "token"] = "{{token}}"
+        body[name or "token"] = slot
         return
     header_name = name or "Authorization"
     if header_name.lower() == "authorization":
-        headers["Authorization"] = "Bearer {{token}}"
+        headers["Authorization"] = f"Bearer {slot}"
         return
-    headers[header_name] = "{{token}}"
+    headers[header_name] = slot
 
 
 def _string_map(value: Any) -> dict[str, str]:

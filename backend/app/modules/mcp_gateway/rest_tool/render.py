@@ -1,11 +1,13 @@
-"""占位符只认系统参数、用户标识和业务 token。调用参数放在 args 里，不能覆盖它们。"""
+"""占位符只认系统参数、用户标识和 auth 变量。调用参数放在 args 里，不能覆盖它们。"""
 
 import re
 from collections.abc import Mapping
 from typing import Any
 
-# 只认这四种。调用参数里的同名值不参与替换。
-_PLACEHOLDER = re.compile(r"\{\{(?:system\.(?P<system>[A-Za-z0-9_]+)|user\.uid|user\.attr\.(?P<attr>[A-Za-z0-9_]+)|token)\}\}")
+# 不再识别 {{token}}。
+_PLACEHOLDER = re.compile(
+    r"\{\{(?:system\.(?P<system>[A-Za-z0-9_]+)|user\.uid|user\.attr\.(?P<attr>[A-Za-z0-9_]+)|auth\.(?P<auth>[A-Za-z0-9_]+))\}\}"
+)
 
 
 def build_context(
@@ -13,20 +15,20 @@ def build_context(
     system_params: Mapping[str, Any],
     uid: str,
     attrs: Mapping[str, Any],
-    token: str,
+    auth_vars: Mapping[str, str],
     arguments: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """业务 token 始终用传入的 token。arguments 原样放在 args，即使里面也有 token。"""
+    """auth 变量始终用传入的 auth_vars。arguments 原样放在 args。"""
     return {
         "system": dict(system_params),
         "user": {"uid": uid, "attr": dict(attrs)},
-        "token": token,
+        "auth": dict(auth_vars),
         "args": dict(arguments),
     }
 
 
 def render_placeholders(template: str, ctx: Mapping[str, Any]) -> str:
-    """替换 {{system.xxx}}、{{user.uid}}、{{user.attr.xxx}}、{{token}}。不读 ctx['args']。"""
+    """替换 {{system.xxx}}、{{user.uid}}、{{user.attr.xxx}}、{{auth.xxx}}。不读 ctx['args']。"""
     return _PLACEHOLDER.sub(lambda match: _replace(match, ctx), template)
 
 
@@ -49,10 +51,12 @@ def _replace(match: re.Match[str], ctx: Mapping[str, Any]) -> str:
         if not isinstance(user, Mapping) or user.get("uid") is None:
             return match.group(0)
         return _as_text(user.get("uid"))
-    if match.group(0) == "{{token}}":
-        if ctx.get("token") is None:
+    auth_key = match.group("auth")
+    if auth_key is not None:
+        auth = ctx.get("auth") or {}
+        if not isinstance(auth, Mapping) or auth_key not in auth:
             return match.group(0)
-        return _as_text(ctx.get("token"))
+        return _as_text(auth[auth_key])
     return match.group(0)
 
 

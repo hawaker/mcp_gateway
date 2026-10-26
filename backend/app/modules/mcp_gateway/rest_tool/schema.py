@@ -47,6 +47,7 @@ class RestToolCreateSchema(BaseModel):
     timeout_ms: int | None = Field(default=None, ge=1, description="超时毫秒")
     token_in: TokenIn = Field(default="header", description="token 位置")
     token_name: str | None = Field(default=None, max_length=128, description="token 字段名")
+    token_var: str | None = Field(default=None, max_length=128, description="注入的 auth 变量名")
     enabled: bool = Field(default=True, description="是否启用")
     system_id: int = Field(..., ge=1, description="业务系统ID")
 
@@ -65,7 +66,7 @@ class RestToolCreateSchema(BaseModel):
     def _validate_url(cls, value: str) -> str:
         return _strip_required(value, "接口地址")
 
-    @field_validator("description", "jsonpath_filter", "token_name")
+    @field_validator("description", "jsonpath_filter", "token_name", "token_var")
     @classmethod
     def _validate_optional_text(cls, value: str | None) -> str | None:
         return _empty_to_none(value)
@@ -100,6 +101,7 @@ class RestToolUpdateSchema(BaseModel):
     timeout_ms: int | None = Field(default=None, ge=1, description="超时毫秒")
     token_in: TokenIn | None = Field(default=None, description="token 位置")
     token_name: str | None = Field(default=None, max_length=128, description="token 字段名")
+    token_var: str | None = Field(default=None, max_length=128, description="注入的 auth 变量名")
     enabled: bool | None = Field(default=None, description="是否启用")
     system_id: int | None = Field(default=None, ge=1, description="业务系统ID")
 
@@ -124,7 +126,7 @@ class RestToolUpdateSchema(BaseModel):
             return None
         return _strip_required(value, "接口地址")
 
-    @field_validator("description", "jsonpath_filter", "token_name")
+    @field_validator("description", "jsonpath_filter", "token_name", "token_var")
     @classmethod
     def _validate_optional_text(cls, value: str | None) -> str | None:
         return _empty_to_none(value)

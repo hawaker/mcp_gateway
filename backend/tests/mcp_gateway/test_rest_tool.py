@@ -20,17 +20,35 @@ _BUSINESS_TOKEN = "secret-token"
 
 
 def test_reserved_placeholders_ignore_call_arguments():
-    from app.modules.mcp_gateway.rest_tool.render import build_context
+    from app.modules.mcp_gateway.rest_tool.render import build_context, render_placeholders
 
     ctx = build_context(
         system_params={"host": "oa"},
         uid="zhangsan",
         attrs={"dept": "rd"},
-        token="secret",
-        arguments={"token": "from-client", "page": 1},
+        auth_vars={"access_token": "secret", "session": "s1"},
+        arguments={"access_token": "from-client", "page": 1},
     )
-    assert ctx["token"] == "secret"
+    assert ctx["auth"]["access_token"] == "secret"
     assert ctx["args"]["page"] == 1
+    assert render_placeholders("S={{auth.session}} T={{token}}", ctx) == "S=s1 T={{token}}"
+
+
+def test_place_token_uses_auth_var():
+    from app.modules.mcp_gateway.rest_tool.assemble import prepare_call
+
+    prepared = prepare_call(
+        "https://oa.example.com",
+        {
+            "url": "/x",
+            "request_type": "GET",
+            "token_in": "header",
+            "token_name": "Authorization",
+            "token_var": "session",
+        },
+        {},
+    )
+    assert prepared.headers["Authorization"] == "Bearer {{auth.session}}"
 
 
 def _load_expiring_redis() -> type:

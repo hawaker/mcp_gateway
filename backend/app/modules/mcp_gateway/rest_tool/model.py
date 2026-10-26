@@ -24,6 +24,7 @@ class RestToolModel(ModelMixin):
     timeout_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="超时毫秒")
     token_in: Mapped[str] = mapped_column(String(16), nullable=False, default="header", comment="token 位置")
     token_name: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="token 字段名")
+    token_var: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="注入的 auth 变量名")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="是否启用")
     system_id: Mapped[int] = mapped_column(
         Integer,
