@@ -209,7 +209,8 @@ function userLabel(item: BizUserTable) {
 }
 
 function upstreamLabel(item: UpstreamTable) {
-  return item.url ? `${item.id} · ${item.url}` : String(item.id);
+  const title = item.name && item.code ? `${item.name}（${item.code}）` : (item.name || item.code || String(item.id));
+  return item.url ? `${title} · ${item.url}` : title;
 }
 
 function formatJson(value: unknown) {
