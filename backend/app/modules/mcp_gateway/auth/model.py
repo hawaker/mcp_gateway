@@ -33,3 +33,7 @@ class AuthConfigModel(ModelMixin):
     http_method: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="HTTP 方法")
     username: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="Basic 用户名")
     password_encrypted: Mapped[str | None] = mapped_column(String(512), nullable=True, comment="Basic 密码密文")
+    headers: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="自定义请求头")
+    query: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="自定义 Query")
+    body_type: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="自定义 Body 类型")
+    body: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="自定义 Body")
