@@ -1,7 +1,7 @@
 <template>
   <div class="capture-rows">
-    <div class="capture-rows__help">
-      <p>登录响应里按「来源 + path」取出值，写入缓存后可用 <code>{{ "{{auth.变量名}}" }}</code>。</p>
+    <div class="capture-rows__help" v-pre>
+      <p>登录响应里按「来源 + path」取出值，写入缓存后可用 <code>{{auth.变量名}}</code>。</p>
       <ul>
         <li>
           <strong>json</strong>：path 填点号路径。例响应
