@@ -53,6 +53,13 @@
       @confirm="handleSubmit()"
     >
       <p class="auth-note">同一业务系统同时只启用一条鉴权。保存为启用时，该系统其余配置会改为未启用。</p>
+      <PlaceholderHelp
+        :title="AUTH_PLACEHOLDER_HELP.title"
+        :intro="AUTH_PLACEHOLDER_HELP.intro"
+        :variables="AUTH_PLACEHOLDER_HELP.variables"
+        :usage="AUTH_PLACEHOLDER_HELP.usage"
+        :examples="AUTH_PLACEHOLDER_HELP.examples"
+      />
       <FaForm
         :key="formRenderKey"
         ref="formRef"
@@ -118,6 +125,8 @@ import type { SearchFormItem } from "@/components/forms/fa-search-bar/index.vue"
 import FaForm from "@/components/forms/fa-form/index.vue";
 import FaTableHeader from "@/components/tables/fa-table-header/index.vue";
 import { renderTableOperationCell, type TableOperationAction } from "@utils";
+import PlaceholderHelp from "../components/PlaceholderHelp.vue";
+import { AUTH_PLACEHOLDER_HELP } from "../components/placeholderHelpContent";
 
 defineOptions({
   name: "McpGatewayBizAuth",
