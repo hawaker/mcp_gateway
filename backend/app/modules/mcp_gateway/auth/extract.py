@@ -1,4 +1,4 @@
-"""从上游响应里取出 access_token，并把相对地址接到业务系统 base_url 上。
+"""从上游响应里取出鉴权变量，并把相对地址接到业务系统 base_url 上。
 
 不发登录请求，不写 Redis，不执行管理员提交的脚本。
 """
@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs
+
+_CAPTURE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
 
 # 正则只看这么多正文，避免超长输入把匹配拖死。
 REGEX_MAX_INPUT_LENGTH = 8192
@@ -53,9 +55,16 @@ class TokenExtractError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class TokenBundle:
-    access_token: str
+    vars: dict[str, str]
     expires_at: datetime
-    token_type: str
+
+    @property
+    def access_token(self) -> str:
+        return self.vars.get("access_token") or ""
+
+    @property
+    def token_type(self) -> str:
+        return "Bearer"
 
 
 def resolve_url(base_url: str, url: str) -> str:
@@ -67,7 +76,71 @@ def resolve_url(base_url: str, url: str) -> str:
     return f"{base}{relative}"
 
 
+def normalize_captures(rule: Mapping[str, Any]) -> list[dict[str, str]]:
+    """优先用 rule.captures；否则把旧的 token_from/token_name 升成一条 access_token。"""
+    raw = rule.get("captures")
+    if isinstance(raw, list) and raw:
+        out: list[dict[str, str]] = []
+        for item in raw:
+            if not isinstance(item, Mapping):
+                raise TokenExtractError("captures 项无效")
+            name = _optional_str(item.get("name"))
+            source = _optional_str(item.get("from")) or ""
+            path = _optional_str(item.get("path")) or ""
+            if not name or not _CAPTURE_NAME.match(name):
+                raise TokenExtractError("captures 变量名无效")
+            if not source:
+                raise TokenExtractError("captures 缺少 from")
+            entry = {"name": name, "from": source, "path": path}
+            cookie = _optional_str(item.get("cookie_name"))
+            if cookie:
+                entry["cookie_name"] = cookie
+            out.append(entry)
+        return out
+    source = _optional_str(rule.get("token_from"))
+    if not source:
+        return []
+    entry = {
+        "name": "access_token",
+        "from": source,
+        "path": _optional_str(rule.get("token_name")) or "",
+    }
+    cookie = _optional_str(rule.get("cookie_name"))
+    if cookie:
+        entry["cookie_name"] = cookie
+    return [entry]
+
+
+def extract_captures(*, body: str, headers: Mapping[str, str], rule: Mapping[str, Any]) -> TokenBundle:
+    """按 captures 取出多个命名变量。access_token 非强制。"""
+    captures = normalize_captures(rule)
+    if not captures:
+        raise TokenExtractError("缺少 captures")
+    vars_: dict[str, str] = {}
+    for item in captures:
+        name = item["name"]
+        if name in vars_:
+            raise TokenExtractError(f"captures 变量名重复: {name}")
+        source = item["from"]
+        value = _extract_value(
+            body,
+            headers,
+            source,
+            _optional_str(item.get("path")),
+            _optional_str(item.get("cookie_name")) or _optional_str(rule.get("cookie_name")),
+        )
+        if source == "header":
+            value = _strip_bearer(value)
+        if source != "text":
+            value = value.strip()
+        if not value:
+            raise TokenExtractError(f"没有取到变量 {name}")
+        vars_[name] = value
+    return TokenBundle(vars=vars_, expires_at=_expires_at(body, headers, rule))
+
+
 def extract_token(*, body: str, headers: Mapping[str, str], rule: Mapping[str, Any]) -> TokenBundle:
+    """单 token 抽取，写入 vars.access_token（fixed / basic / interactive）。"""
     source = str(rule.get("token_from") or "")
     token = _extract_value(
         body,
@@ -82,8 +155,7 @@ def extract_token(*, body: str, headers: Mapping[str, str], rule: Mapping[str, A
         token = token.strip()
     if not token:
         raise TokenExtractError("没有取到 token")
-    token_type = str(rule.get("token_type") or "Bearer")
-    return TokenBundle(access_token=token, expires_at=_expires_at(body, headers, rule), token_type=token_type)
+    return TokenBundle(vars={"access_token": token}, expires_at=_expires_at(body, headers, rule))
 
 
 def _expires_at(body: str, headers: Mapping[str, str], rule: Mapping[str, Any]) -> datetime:
