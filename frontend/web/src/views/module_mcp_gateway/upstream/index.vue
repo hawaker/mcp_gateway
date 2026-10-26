@@ -244,19 +244,6 @@ const rules = reactive({
       trigger: "blur",
     },
   ],
-  credential_header: [{ required: true, message: "请输入凭证请求头", trigger: "blur" }],
-  credential_value: [
-    {
-      validator: (_rule: unknown, value: string, callback: (error?: Error) => void) => {
-        if (dialogVisible.type === "create" && !(value ?? "").trim()) {
-          callback(new Error("请输入凭证"));
-          return;
-        }
-        callback();
-      },
-      trigger: "blur",
-    },
-  ],
 });
 
 const dialogFormItems = computed<FormItem[]>(() => [
@@ -290,7 +277,7 @@ const dialogFormItems = computed<FormItem[]>(() => [
     key: "credential_header",
     type: "input",
     span: 24,
-    props: { placeholder: "例如 X-Api-Key", maxlength: 128 },
+    props: { placeholder: "可选，例如 X-Api-Key", maxlength: 128 },
   },
   {
     label: "凭证",
@@ -301,7 +288,7 @@ const dialogFormItems = computed<FormItem[]>(() => [
       type: "password",
       showPassword: true,
       maxlength: 8192,
-      placeholder: dialogVisible.type === "update" ? "留空则不修改" : "只写入，保存后不再显示",
+      placeholder: dialogVisible.type === "update" ? "可选，留空则不修改" : "可选，只写入，保存后不再显示",
     },
   },
 ]);

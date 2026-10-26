@@ -16,9 +16,10 @@ export function toUpstreamPayload(body: UpstreamForm, mode: "create" | "update")
   };
   if (mode === "create") {
     payload.code = (body.code ?? "").trim();
-  }
-  if (mode === "create" || credential) {
     payload.credential_value = credential ?? "";
+  } else if (credential) {
+    // 编辑时留空表示不改密文
+    payload.credential_value = credential;
   }
   return payload;
 }

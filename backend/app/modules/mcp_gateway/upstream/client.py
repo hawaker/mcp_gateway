@@ -130,10 +130,13 @@ class UpstreamClient:
     async def _post(self, payload: dict[str, Any]) -> tuple[int, bytes]:
         url = require_http_url(self.upstream.url)
         headers = {
-            self.upstream.credential_header: CryptoUtil.decrypt(self.upstream.credential_value_encrypted),
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+        header_name = (self.upstream.credential_header or "").strip()
+        cipher = self.upstream.credential_value_encrypted or ""
+        if header_name and cipher:
+            headers[header_name] = CryptoUtil.decrypt(cipher)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         client = httpx.AsyncClient(transport=self._open_transport(), timeout=30.0)
         try:

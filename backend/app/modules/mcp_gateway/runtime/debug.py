@@ -461,11 +461,13 @@ class DebugService:
     async def _upstream_rpc(self, upstream_id: int, method: str, params: dict[str, Any]) -> _Exchange:
         upstream = await UpstreamMcpCRUD(self.auth, self.db).get(id=upstream_id)
         if upstream is None:
-            raise CustomException(msg="MCP 代理 不存在")
-        credential = CryptoUtil.decrypt(upstream.credential_value_encrypted)
+            raise CustomException(msg="MCP 代理不存在")
+        cipher = upstream.credential_value_encrypted or ""
+        credential = CryptoUtil.decrypt(cipher) if cipher else ""
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         status, content, sent_headers = await _upstream_post(upstream, credential, payload, self.transport)
-        return _Exchange(status, sent_headers, payload, _decode_bytes(content), (credential,))
+        secrets = (credential,) if credential else ()
+        return _Exchange(status, sent_headers, payload, _decode_bytes(content), secrets)
 
     async def _group_secrets(self, user_id: int, mcp_token: str) -> tuple[str, ...]:
         secrets = [mcp_token]
@@ -487,10 +489,12 @@ async def _upstream_post(
 ) -> tuple[int, bytes, dict[str, str]]:
     url = require_http_url(upstream.url)
     headers = {
-        upstream.credential_header: credential,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
+    header_name = (upstream.credential_header or "").strip()
+    if header_name and credential:
+        headers[header_name] = credential
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     client = httpx.AsyncClient(transport=_borrow(transport), timeout=30.0)
     try:

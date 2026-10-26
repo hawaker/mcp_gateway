@@ -26,8 +26,8 @@ class UpstreamMcpCreateSchema(BaseModel):
     name: str = Field(..., min_length=1, max_length=128, description="名称")
     code: str = Field(..., min_length=1, max_length=64, description="英文编码")
     url: str = Field(..., min_length=1, max_length=2048, description="上游地址")
-    credential_header: str = Field(..., min_length=1, max_length=128, description="凭证请求头")
-    credential_value: str = Field(..., min_length=1, max_length=8192, description="凭证")
+    credential_header: str = Field(default="", max_length=128, description="凭证请求头，可选")
+    credential_value: str = Field(default="", max_length=8192, description="凭证，可选")
 
     @field_validator("name")
     @classmethod
@@ -47,12 +47,12 @@ class UpstreamMcpCreateSchema(BaseModel):
     @field_validator("credential_header")
     @classmethod
     def _validate_header(cls, value: str) -> str:
-        return _strip_required(value, "凭证请求头")
+        return (value or "").strip()
 
     @field_validator("credential_value")
     @classmethod
     def _validate_credential(cls, value: str) -> str:
-        return _strip_required(value, "凭证")
+        return (value or "").strip()
 
 
 class UpstreamMcpUpdateSchema(BaseModel):
@@ -60,8 +60,8 @@ class UpstreamMcpUpdateSchema(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=128, description="名称")
     url: str | None = Field(default=None, min_length=1, max_length=2048, description="上游地址")
-    credential_header: str | None = Field(default=None, min_length=1, max_length=128, description="凭证请求头")
-    credential_value: str | None = Field(default=None, max_length=8192, description="凭证")
+    credential_header: str | None = Field(default=None, max_length=128, description="凭证请求头，可选")
+    credential_value: str | None = Field(default=None, max_length=8192, description="凭证，可选")
 
     @field_validator("name")
     @classmethod
@@ -82,7 +82,7 @@ class UpstreamMcpUpdateSchema(BaseModel):
     def _validate_header(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        return _strip_required(value, "凭证请求头")
+        return value.strip()
 
     @field_validator("credential_value")
     @classmethod

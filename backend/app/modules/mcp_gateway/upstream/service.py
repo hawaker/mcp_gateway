@@ -27,13 +27,14 @@ from .schema import (
 
 
 def upstream_create_payload(data: UpstreamMcpCreateSchema) -> dict[str, Any]:
-    """明文凭证换成密文。返回值里不再保留 credential_value。"""
+    """明文凭证换成密文。无凭证时存空串。返回值里不再保留 credential_value。"""
+    credential = (data.credential_value or "").strip()
     return {
         "name": data.name,
         "code": data.code,
         "url": data.url,
-        "credential_header": data.credential_header,
-        "credential_value_encrypted": CryptoUtil.encrypt(data.credential_value),
+        "credential_header": (data.credential_header or "").strip(),
+        "credential_value_encrypted": CryptoUtil.encrypt(credential) if credential else "",
     }
 
 
