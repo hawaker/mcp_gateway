@@ -88,8 +88,14 @@ const { columns, columnChecks, data, loading, replaceSearchParams, resetSearchPa
       { type: "globalIndex", width: 56, label: "序号" },
       { prop: "user_id", label: "用户", width: 88 },
       { prop: "system_id", label: "系统", width: 88 },
-      { prop: "access_token", label: "访问令牌", minWidth: 200, showOverflowTooltip: true },
-      { prop: "token_type", label: "类型", width: 100, showOverflowTooltip: true },
+      {
+        prop: "var_keys",
+        label: "变量键",
+        minWidth: 160,
+        showOverflowTooltip: true,
+        formatter: (row: BizTokenCacheRow) => (row.var_keys ?? Object.keys(row.vars ?? {})).join(", "),
+      },
+      { prop: "access_token", label: "access_token", minWidth: 160, showOverflowTooltip: true },
       { prop: "expires_at", label: "过期时间", width: 180, showOverflowTooltip: true },
       {
         prop: "expired",

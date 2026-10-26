@@ -330,6 +330,7 @@ function createInitialForm(): RestToolForm {
     timeout_ms: undefined,
     token_in: "header",
     token_name: "Authorization",
+    token_var: "access_token",
     enabled: true,
     system_id: undefined,
   };
@@ -380,7 +381,7 @@ const dialogFormItems = computed<FormItem[]>(() => [
     span: 24,
     props: { placeholder: "请选择", options: REQUEST_OPTIONS },
   },
-  { label: "请求头", key: "headers_text", type: "input", span: 24, props: { type: "textarea", rows: 3, placeholder: "JSON 对象，可用 {{user.uid}}、{{token}}" } },
+  { label: "请求头", key: "headers_text", type: "input", span: 24, props: { type: "textarea", rows: 3, placeholder: "JSON 对象，可用 {{user.uid}}、{{auth.access_token}}" } },
   { label: "入参结构", key: "input_schema_text", type: "input", span: 24, props: { type: "textarea", rows: 3, placeholder: "JSON Schema 或 {}" } },
   { label: "出参结构", key: "output_schema_text", type: "input", span: 24, props: { type: "textarea", rows: 3, placeholder: "JSON 对象" } },
   { label: "Json Path", key: "jsonpath_filter", type: "input", span: 24, props: { placeholder: "例如 $.data.items", maxlength: 512 } },
@@ -395,6 +396,7 @@ const dialogFormItems = computed<FormItem[]>(() => [
     props: { placeholder: "请选择", options: TOKEN_IN_OPTIONS },
   },
   { label: "Token 字段", key: "token_name", type: "input", span: 24, props: { placeholder: "默认 Authorization", maxlength: 128 } },
+  { label: "注入变量名", key: "token_var", type: "input", span: 24, props: { placeholder: "默认 access_token，对应 {{auth.xxx}}", maxlength: 128 } },
   { label: "启用", key: "enabled", type: "switch", span: 24 },
 ]);
 
@@ -423,6 +425,7 @@ function rowToForm(row: RestToolTable): RestToolForm {
     timeout_ms: row.timeout_ms ?? undefined,
     token_in: row.token_in ?? "header",
     token_name: row.token_name ?? "",
+    token_var: row.token_var ?? "access_token",
     enabled: row.enabled !== false,
     system_id: row.system_id,
   };

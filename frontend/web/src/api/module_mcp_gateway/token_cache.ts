@@ -32,6 +32,8 @@ export interface BizTokenCacheQuery extends PageQuery {
 export interface BizTokenCacheRow {
   user_id: number;
   system_id: number;
+  vars?: Record<string, string>;
+  var_keys?: string[];
   access_token: string;
   expires_at: string;
   token_type: string;

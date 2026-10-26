@@ -84,6 +84,9 @@
         <template #body_form_rows>
           <KeyValueRows v-model="formBodyRows" add-label="添加字段" />
         </template>
+        <template #captures_rows>
+          <CaptureRows v-model="captureRows" add-label="添加变量" />
+        </template>
       </FaForm>
       <section v-if="guide" class="auth-guide">
         <h3 class="auth-guide__title">{{ guide.title }}</h3>
@@ -111,10 +114,8 @@
           <li><span>失败时用户看到</span>{{ guide.onFailure }}</li>
         </ul>
         <p class="auth-note">
-          取值规则是 JSON。token_from 可以是 header、json、form、text、regex。header 会去掉开头的
-          Bearer 前缀；读 Set-Cookie 时用 cookie_name 指定 cookie。json 用点号路径，form 用字段名，text
-          用整段正文，regex 用第一个捕获组。expires_unit 为 seconds 或 absolute。响应里没有有效期时用
-          expires_seconds。
+          custom 用上方「捕获变量」从表单配置多字段；取值规则 JSON 还可写 expires_seconds，或
+          expires_from / expires_name / expires_unit。其它方法仍用 token_from / token_name（header、json、form、text、regex）。
         </p>
       </section>
       <p v-else class="auth-note">选择鉴权方法后，这里显示该方法的时序图和说明。</p>
@@ -138,6 +139,7 @@ import type { SearchFormItem } from "@/components/forms/fa-search-bar/index.vue"
 import FaForm from "@/components/forms/fa-form/index.vue";
 import FaTableHeader from "@/components/tables/fa-table-header/index.vue";
 import { renderTableOperationCell, type TableOperationAction } from "@utils";
+import CaptureRows, { type CaptureRow } from "../components/CaptureRows.vue";
 import KeyValueRows, { type KvRow } from "../components/KeyValueRows.vue";
 import PlaceholderHelp from "../components/PlaceholderHelp.vue";
 import { AUTH_PLACEHOLDER_HELP } from "../components/placeholderHelpContent";
@@ -458,15 +460,46 @@ const initialFormData = createInitialForm();
 const headerRows = ref<KvRow[]>([{ key: "", value: "" }]);
 const queryRows = ref<KvRow[]>([{ key: "", value: "" }]);
 const formBodyRows = ref<KvRow[]>([{ key: "", value: "" }]);
+const captureRows = ref<CaptureRow[]>([{ name: "access_token", from: "json", path: "" }]);
 const { dialogVisible } = useCrudDialog();
 const formRef = ref<InstanceType<typeof FaForm> | null>(null);
 const formRenderKey = ref(0);
 const guide = computed(() => (formData.value.method ? AUTH_GUIDES[formData.value.method] : undefined));
 
+function emptyCaptureRows(): CaptureRow[] {
+  return [{ name: "access_token", from: "json", path: "" }];
+}
+
+function capturesFromRule(rule: Record<string, unknown> | undefined | null): CaptureRow[] {
+  const raw = rule?.captures;
+  if (Array.isArray(raw) && raw.length) {
+    return raw.map((item) => {
+      const row = item as Record<string, unknown>;
+      return {
+        name: String(row.name ?? ""),
+        from: String(row.from ?? "json"),
+        path: String(row.path ?? ""),
+      };
+    });
+  }
+  const from = rule?.token_from;
+  if (typeof from === "string" && from) {
+    return [
+      {
+        name: "access_token",
+        from,
+        path: typeof rule?.token_name === "string" ? rule.token_name : "",
+      },
+    ];
+  }
+  return emptyCaptureRows();
+}
+
 function resetCustomRequestEditors() {
   headerRows.value = [{ key: "", value: "" }];
   queryRows.value = [{ key: "", value: "" }];
   formBodyRows.value = [{ key: "", value: "" }];
+  captureRows.value = emptyCaptureRows();
   formData.value.headers = {};
   formData.value.query = {};
   formData.value.body_type = "none";
@@ -486,10 +519,35 @@ watch(
   },
 );
 
+function syncCapturesIntoRuleText() {
+  if (formData.value.method !== "custom") return;
+  const raw = (formData.value.rule_text ?? "").trim() || "{}";
+  const parsed = JSON.parse(raw) as unknown;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("取值规则须为 JSON 对象");
+  }
+  const rule = parsed as Record<string, unknown>;
+  const captures = captureRows.value
+    .map((row) => ({
+      name: row.name.trim(),
+      from: row.from.trim(),
+      path: row.path.trim(),
+    }))
+    .filter((row) => row.name);
+  if (!captures.length) {
+    throw new Error("请至少配置一条捕获变量");
+  }
+  rule.captures = captures;
+  delete rule.token_from;
+  delete rule.token_name;
+  formData.value.rule_text = JSON.stringify(rule, null, 2);
+}
+
 function syncCustomRequestToForm() {
   if (formData.value.method !== "custom") return;
   formData.value.headers = rowsToRecord(headerRows.value);
   formData.value.query = rowsToRecord(queryRows.value);
+  syncCapturesIntoRuleText();
   const bodyType = (formData.value.body_type ?? "none") as BizAuthBodyType;
   formData.value.body_type = bodyType;
   if (bodyType === "none") {
@@ -640,6 +698,7 @@ const dialogFormItems = computed<FormItem[]>(() => {
     } else if (formData.value.body_type === "form") {
       items.push({ label: "Body", key: "body_form_rows", type: "input", span: 24 });
     }
+    items.push({ label: "捕获变量", key: "captures_rows", type: "input", span: 24 });
   }
   if (formData.value.method === "basic") {
     items.push(
@@ -674,6 +733,7 @@ async function detailForForm(id: number) {
   headerRows.value = recordToRows(row.headers);
   queryRows.value = recordToRows(row.query);
   formBodyRows.value = bodyType === "form" ? recordToRows(row.body as Record<string, string> | null) : [{ key: "", value: "" }];
+  captureRows.value = row.method === "custom" ? capturesFromRule(row.rule) : emptyCaptureRows();
   const data: BizAuthForm = {
     id: row.id,
     system_id: row.system_id,

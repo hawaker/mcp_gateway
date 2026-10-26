@@ -34,6 +34,7 @@ export function toRestToolPayload(body: RestToolForm) {
     timeout_ms: timeout === undefined || timeout === null || Number.isNaN(Number(timeout)) ? null : Number(timeout),
     token_in: body.token_in || "header",
     token_name: emptyToNull(body.token_name),
+    token_var: emptyToNull(body.token_var) || "access_token",
     enabled: body.enabled ?? true,
     system_id: body.system_id,
   };
@@ -109,6 +110,7 @@ export interface RestToolTable extends BaseType {
   timeout_ms?: number | null;
   token_in?: string;
   token_name?: string | null;
+  token_var?: string | null;
   enabled?: boolean;
   system_id?: number;
 }
@@ -128,6 +130,7 @@ export interface RestToolForm extends BaseFormType {
   timeout_ms?: number | null;
   token_in?: string;
   token_name?: string;
+  token_var?: string;
   enabled?: boolean;
   system_id?: number;
 }
