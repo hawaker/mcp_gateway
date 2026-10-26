@@ -2,6 +2,24 @@ import { request } from "@utils";
 
 const API_PATH = "/mcp-gateway/biz-auth";
 
+export type BizAuthBodyType = "none" | "json" | "form";
+
+export function rowsToRecord(rows: { key: string; value: string }[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    const k = row.key.trim();
+    if (!k) continue;
+    out[k] = row.value;
+  }
+  return out;
+}
+
+export function recordToRows(record?: Record<string, string> | null): { key: string; value: string }[] {
+  const entries = Object.entries(record ?? {});
+  if (!entries.length) return [{ key: "", value: "" }];
+  return entries.map(([key, value]) => ({ key, value: String(value ?? "") }));
+}
+
 function parseObject(text: string | undefined): Record<string, unknown> {
   const raw = (text ?? "").trim();
   if (!raw) return {};
@@ -26,6 +44,12 @@ function toPayload(body: BizAuthForm): Record<string, unknown> {
   if (body.method === "basic") {
     data.username = body.username;
     data.password = body.password;
+  }
+  if (body.method === "custom") {
+    data.headers = body.headers ?? {};
+    data.query = body.query ?? {};
+    data.body_type = body.body_type ?? "none";
+    data.body = body.body_type === "none" ? null : (body.body ?? null);
   }
   return data;
 }
@@ -82,6 +106,10 @@ export interface BizAuthTable extends BaseType {
   http_method?: string;
   username?: string;
   password?: string;
+  headers?: Record<string, string> | null;
+  query?: Record<string, string> | null;
+  body_type?: BizAuthBodyType | null;
+  body?: Record<string, unknown> | null;
 }
 
 export interface BizAuthForm extends BaseFormType {
@@ -93,4 +121,9 @@ export interface BizAuthForm extends BaseFormType {
   http_method?: string;
   username?: string;
   password?: string;
+  headers?: Record<string, string> | null;
+  query?: Record<string, string> | null;
+  body_type?: BizAuthBodyType | null;
+  body?: Record<string, unknown> | null;
+  body_text?: string;
 }

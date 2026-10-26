@@ -47,16 +47,20 @@ export const AUTH_PLACEHOLDER_HELP: PlaceholderHelpContent = {
   ],
   usage: [
     "地址：URL 可写占位符。",
-    "取值规则：JSON 里 query / json / form 对象的值可写占位符（custom / basic）。",
+    "自定义请求：请求头、Query、Form 的值，以及 JSON Body 里的字符串，可写占位符。",
+    "Basic：取值规则 JSON 里 query / json / form 对象的值可写占位符。",
     "fixed：系统自动 POST {uid_field: uid}，不必手写 {{user.uid}}。",
     "interactive：主要配验证页 URL 与回调取值规则；登录请求本身不走这些占位符换 token。",
   ],
   examples: [
     {
-      caption: "custom 的取值规则片段",
-      code: `{
-  "query": { "userId": "{{user.uid}}" },
-  "json": { "dept": "{{user.attr.dept}}", "appKey": "{{system.app_key}}" },
+      caption: "自定义请求：请求头 / Query / Body 与取值规则分开",
+      code: `请求头: X-User = {{user.uid}}
+Query: userId = {{user.uid}}
+Body(JSON): { "dept": "{{user.attr.dept}}", "appKey": "{{system.app_key}}" }
+
+取值规则:
+{
   "token_from": "json",
   "token_name": "access_token",
   "expires_seconds": 3600

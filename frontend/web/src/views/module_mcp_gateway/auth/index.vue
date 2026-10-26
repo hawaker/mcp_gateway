@@ -74,7 +74,17 @@
         :show-reset="false"
         :show-submit="false"
         class="crud-dialog-art-form"
-      />
+      >
+        <template #headers_rows>
+          <KeyValueRows v-model="headerRows" add-label="添加 Header" />
+        </template>
+        <template #query_rows>
+          <KeyValueRows v-model="queryRows" add-label="添加 Query" />
+        </template>
+        <template #body_form_rows>
+          <KeyValueRows v-model="formBodyRows" add-label="添加字段" />
+        </template>
+      </FaForm>
       <section v-if="guide" class="auth-guide">
         <h3 class="auth-guide__title">{{ guide.title }}</h3>
         <div class="auth-seq" :style="{ '--actors': String(guide.actors.length) }">
@@ -114,6 +124,9 @@
 
 <script setup lang="ts">
 import BizAuthAPI, {
+  recordToRows,
+  rowsToRecord,
+  type BizAuthBodyType,
   type BizAuthForm,
   type BizAuthMethod,
   type BizAuthPageQuery,
@@ -125,6 +138,7 @@ import type { SearchFormItem } from "@/components/forms/fa-search-bar/index.vue"
 import FaForm from "@/components/forms/fa-form/index.vue";
 import FaTableHeader from "@/components/tables/fa-table-header/index.vue";
 import { renderTableOperationCell, type TableOperationAction } from "@utils";
+import KeyValueRows, { type KvRow } from "../components/KeyValueRows.vue";
 import PlaceholderHelp from "../components/PlaceholderHelp.vue";
 import { AUTH_PLACEHOLDER_HELP } from "../components/placeholderHelpContent";
 
@@ -206,8 +220,8 @@ const AUTH_GUIDES: Record<BizAuthMethod, AuthGuide> = {
       { from: "本系统", to: "Redis", text: "写入 token" },
       { from: "本系统", to: "MCP 客户端", text: "返回工具结果" },
     ],
-    when: "OA 登录不是固定的 uid POST，而是管理员配置的 HTTP 请求，参数放在 query、JSON 或 form。",
-    fills: "业务系统、请求地址、HTTP 方法、取值规则。",
+    when: "OA 登录不是固定的 uid POST，而是管理员配置的 HTTP 请求，参数可放在 Header、Query、JSON 或 Form。",
+    fills: "业务系统、请求地址、HTTP 方法、请求头、Query、Body 类型与 Body、取值规则。",
     tokenWhen: "缓存未命中时，本系统按配置请求 OA，从响应取出 token 并写入 Redis。",
     opensPage: "不需要。用户不用打开页面。",
     onFailure: "MCP 客户端看到调用失败，没有写入 token。",
@@ -414,6 +428,12 @@ const {
   },
 });
 
+const BODY_TYPE_OPTIONS = [
+  { label: "无", value: "none" },
+  { label: "JSON", value: "json" },
+  { label: "Form", value: "form" },
+] as const;
+
 function createInitialForm(): BizAuthForm {
   return {
     id: undefined,
@@ -425,15 +445,69 @@ function createInitialForm(): BizAuthForm {
     password: "",
     rule_text: RULE_PLACEHOLDER,
     enabled: true,
+    headers: {},
+    query: {},
+    body_type: "none",
+    body: null,
+    body_text: "{}",
   };
 }
 
 const formData = ref<BizAuthForm>(createInitialForm());
 const initialFormData = createInitialForm();
+const headerRows = ref<KvRow[]>([{ key: "", value: "" }]);
+const queryRows = ref<KvRow[]>([{ key: "", value: "" }]);
+const formBodyRows = ref<KvRow[]>([{ key: "", value: "" }]);
 const { dialogVisible } = useCrudDialog();
 const formRef = ref<InstanceType<typeof FaForm> | null>(null);
 const formRenderKey = ref(0);
 const guide = computed(() => (formData.value.method ? AUTH_GUIDES[formData.value.method] : undefined));
+
+function resetCustomRequestEditors() {
+  headerRows.value = [{ key: "", value: "" }];
+  queryRows.value = [{ key: "", value: "" }];
+  formBodyRows.value = [{ key: "", value: "" }];
+  formData.value.headers = {};
+  formData.value.query = {};
+  formData.value.body_type = "none";
+  formData.value.body = null;
+  formData.value.body_text = "{}";
+}
+
+watch(
+  () => formData.value.method,
+  (method, prev) => {
+    if (method === "custom" && prev !== "custom") {
+      if (!formData.value.body_type) formData.value.body_type = "none";
+    }
+    if (prev === "custom" && method !== "custom") {
+      resetCustomRequestEditors();
+    }
+  },
+);
+
+function syncCustomRequestToForm() {
+  if (formData.value.method !== "custom") return;
+  formData.value.headers = rowsToRecord(headerRows.value);
+  formData.value.query = rowsToRecord(queryRows.value);
+  const bodyType = (formData.value.body_type ?? "none") as BizAuthBodyType;
+  formData.value.body_type = bodyType;
+  if (bodyType === "none") {
+    formData.value.body = null;
+    return;
+  }
+  if (bodyType === "form") {
+    formData.value.body = rowsToRecord(formBodyRows.value);
+    return;
+  }
+  const raw = (formData.value.body_text ?? "").trim() || "{}";
+  const parsed = JSON.parse(raw) as unknown;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Body 须为 JSON 对象");
+  }
+  formData.value.body = parsed as Record<string, unknown>;
+}
+
 const rules = reactive({
   system_id: [{ required: true, message: "请选择业务系统", trigger: "change" }],
   method: [{ required: true, message: "请选择鉴权方法", trigger: "change" }],
@@ -448,6 +522,39 @@ const rules = reactive({
         callback();
       },
       trigger: "change",
+    },
+  ],
+  body_type: [
+    {
+      validator: (_rule: unknown, value: string, callback: (error?: Error) => void) => {
+        if (formData.value.method === "custom" && !value) {
+          callback(new Error("请选择 Body 类型"));
+          return;
+        }
+        callback();
+      },
+      trigger: "change",
+    },
+  ],
+  body_text: [
+    {
+      validator: (_rule: unknown, value: string, callback: (error?: Error) => void) => {
+        if (formData.value.method !== "custom" || formData.value.body_type !== "json") {
+          callback();
+          return;
+        }
+        try {
+          const parsed = JSON.parse((value ?? "").trim() || "{}") as unknown;
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+            callback(new Error("Body 须为 JSON 对象"));
+            return;
+          }
+          callback();
+        } catch {
+          callback(new Error("Body 须为合法 JSON"));
+        }
+      },
+      trigger: "blur",
     },
   ],
   username: [
@@ -510,6 +617,30 @@ const dialogFormItems = computed<FormItem[]>(() => {
       props: { placeholder: "请选择 HTTP 方法", options: HTTP_METHOD_OPTIONS },
     });
   }
+  if (formData.value.method === "custom") {
+    items.push(
+      { label: "请求头", key: "headers_rows", type: "input", span: 24 },
+      { label: "Query 参数", key: "query_rows", type: "input", span: 24 },
+      {
+        label: "Body 类型",
+        key: "body_type",
+        type: "select",
+        span: 24,
+        props: { placeholder: "请选择 Body 类型", options: [...BODY_TYPE_OPTIONS] },
+      },
+    );
+    if (formData.value.body_type === "json") {
+      items.push({
+        label: "Body",
+        key: "body_text",
+        type: "input",
+        span: 24,
+        props: { type: "textarea", rows: 6, placeholder: '{\n  "uid": "{{user.uid}}"\n}' },
+      });
+    } else if (formData.value.body_type === "form") {
+      items.push({ label: "Body", key: "body_form_rows", type: "input", span: 24 });
+    }
+  }
   if (formData.value.method === "basic") {
     items.push(
       { label: "用户名", key: "username", type: "input", span: 24, props: { placeholder: "系统账号", maxlength: 128 } },
@@ -538,19 +669,27 @@ const dialogFormItems = computed<FormItem[]>(() => {
 async function detailForForm(id: number) {
   const response = await BizAuthAPI.detailAuth(id);
   const row = response.data.data;
-  const data: BizAuthForm | undefined = row
-    ? {
-        id: row.id,
-        system_id: row.system_id,
-        method: row.method,
-        url: row.url ?? "",
-        http_method: row.http_method,
-        username: row.username ?? "",
-        password: row.password ?? "",
-        rule_text: JSON.stringify(row.rule ?? {}, null, 2),
-        enabled: row.enabled !== false,
-      }
-    : undefined;
+  if (!row) return { data: { data: undefined } };
+  const bodyType = (row.body_type ?? "none") as BizAuthBodyType;
+  headerRows.value = recordToRows(row.headers);
+  queryRows.value = recordToRows(row.query);
+  formBodyRows.value = bodyType === "form" ? recordToRows(row.body as Record<string, string> | null) : [{ key: "", value: "" }];
+  const data: BizAuthForm = {
+    id: row.id,
+    system_id: row.system_id,
+    method: row.method,
+    url: row.url ?? "",
+    http_method: row.http_method,
+    username: row.username ?? "",
+    password: row.password ?? "",
+    rule_text: JSON.stringify(row.rule ?? {}, null, 2),
+    enabled: row.enabled !== false,
+    headers: row.headers ?? {},
+    query: row.query ?? {},
+    body_type: row.method === "custom" ? bodyType : "none",
+    body: row.body ?? null,
+    body_text: JSON.stringify(row.body ?? {}, null, 2),
+  };
   return { data: { data } };
 }
 
@@ -560,15 +699,30 @@ async function openEdit(row: BizAuthTable) {
   await handleOpenDialog("update", row.id);
 }
 
-const { submitLoading, handleCloseDialog, handleOpenDialog, handleSubmit } = useCrudForm<BizAuthForm>({
+async function createAuthWithShape(form: BizAuthForm) {
+  syncCustomRequestToForm();
+  return BizAuthAPI.createAuth(form);
+}
+
+async function updateAuthWithShape(id: number, form: BizAuthForm) {
+  syncCustomRequestToForm();
+  return BizAuthAPI.updateAuth(id, form);
+}
+
+const {
+  submitLoading,
+  handleCloseDialog: closeCrudDialog,
+  handleOpenDialog,
+  handleSubmit,
+} = useCrudForm<BizAuthForm>({
   formData,
   initialFormData,
   dialogVisible,
   dataFormRef: formRef,
   formRenderKey,
   detailApi: detailForForm,
-  createApi: BizAuthAPI.createAuth,
-  updateApi: BizAuthAPI.updateAuth,
+  createApi: createAuthWithShape,
+  updateApi: updateAuthWithShape,
   titles: { create: "新增鉴权", update: "修改鉴权" },
   onCreateSuccess: async () => {
     await refreshCreate();
@@ -578,10 +732,16 @@ const { submitLoading, handleCloseDialog, handleOpenDialog, handleSubmit } = use
   },
 });
 
+async function handleCloseDialog() {
+  await closeCrudDialog();
+  resetCustomRequestEditors();
+}
+
 async function handleAdd() {
   createLoading.value = true;
   try {
     await loadSystems();
+    resetCustomRequestEditors();
     await handleOpenDialog("create");
   } finally {
     createLoading.value = false;
