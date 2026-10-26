@@ -11,6 +11,7 @@
           <ElRadioGroup v-model="target">
             <ElRadioButton value="group">MCP 组</ElRadioButton>
             <ElRadioButton value="upstream">上游 MCP</ElRadioButton>
+            <ElRadioButton value="custom">自定义</ElRadioButton>
           </ElRadioGroup>
         </div>
 
@@ -36,7 +37,7 @@
           </div>
         </template>
 
-        <template v-else>
+        <template v-else-if="target === 'upstream'">
           <div class="mcp-debug__row">
             <span class="mcp-debug__label">上游 MCP</span>
             <ElSelect v-model="upstreamId" filterable clearable placeholder="选择上游" class="mcp-debug__control">
@@ -47,6 +48,31 @@
                 :value="item.id!"
               />
             </ElSelect>
+          </div>
+        </template>
+
+        <template v-else-if="target === 'custom'">
+          <div class="mcp-debug__row">
+            <span class="mcp-debug__label">URL</span>
+            <ElInput v-model="customUrl" clearable placeholder="https://..." class="mcp-debug__control" />
+          </div>
+          <div class="mcp-debug__row">
+            <span class="mcp-debug__label">传输</span>
+            <ElRadioGroup v-model="transport">
+              <ElRadioButton value="streamable_http">Streamable HTTP</ElRadioButton>
+              <ElRadioButton value="sse">SSE</ElRadioButton>
+            </ElRadioGroup>
+          </div>
+          <div class="mcp-debug__row mcp-debug__headers">
+            <span class="mcp-debug__label">Header</span>
+            <div class="flex flex-col gap-2 flex-1">
+              <div v-for="(row, index) in headerRows" :key="index" class="flex gap-2 items-center flex-wrap">
+                <ElInput v-model="row.key" placeholder="名称" class="mcp-debug__header-key" />
+                <ElInput v-model="row.value" placeholder="值" class="mcp-debug__header-value" />
+                <ElButton text type="danger" @click="headerRows.splice(index, 1)">删除</ElButton>
+              </div>
+              <ElButton plain @click="headerRows.push({ key: '', value: '' })">添加 Header</ElButton>
+            </div>
           </div>
         </template>
 
@@ -155,6 +181,8 @@ const userId = ref<number | undefined>();
 const upstreamId = ref<number | undefined>();
 const transport = ref<McpDebugTransport>("streamable_http");
 const reveal = ref(false);
+const customUrl = ref("");
+const headerRows = ref<{ key: string; value: string }[]>([{ key: "", value: "" }]);
 
 const groups = ref<McpGroupTable[]>([]);
 const users = ref<BizUserTable[]>([]);
@@ -188,6 +216,16 @@ function formatJson(value: unknown) {
   return JSON.stringify(value, null, 2);
 }
 
+function buildCustomHeaders(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const row of headerRows.value) {
+    const key = row.key.trim();
+    if (!key) continue;
+    out[key] = row.value;
+  }
+  return out;
+}
+
 function buildTarget(): McpDebugTarget | null {
   if (target.value === "group") {
     if (!groupId.value || !userId.value) {
@@ -202,13 +240,26 @@ function buildTarget(): McpDebugTarget | null {
       reveal: reveal.value,
     };
   }
-  if (!upstreamId.value) {
-    ElMessage.warning("请选择上游 MCP");
+  if (target.value === "upstream") {
+    if (!upstreamId.value) {
+      ElMessage.warning("请选择上游 MCP");
+      return null;
+    }
+    return {
+      target: "upstream",
+      upstream_id: upstreamId.value,
+      reveal: reveal.value,
+    };
+  }
+  if (!customUrl.value.trim()) {
+    ElMessage.warning("请填写 MCP URL");
     return null;
   }
   return {
-    target: "upstream",
-    upstream_id: upstreamId.value,
+    target: "custom",
+    url: customUrl.value.trim(),
+    headers: buildCustomHeaders(),
+    transport: transport.value,
     reveal: reveal.value,
   };
 }
@@ -355,5 +406,15 @@ onMounted(loadOptions);
   word-break: break-word;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.mcp-debug__header-key {
+  min-width: 140px;
+  max-width: 200px;
+}
+
+.mcp-debug__header-value {
+  min-width: 200px;
+  max-width: 360px;
 }
 </style>

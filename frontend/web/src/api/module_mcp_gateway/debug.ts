@@ -30,7 +30,7 @@ const McpDebugAPI = {
 
 export default McpDebugAPI;
 
-export type McpDebugTargetKind = "group" | "upstream";
+export type McpDebugTargetKind = "group" | "upstream" | "custom";
 export type McpDebugTransport = "streamable_http" | "sse";
 
 export interface McpDebugTarget {
@@ -39,6 +39,8 @@ export interface McpDebugTarget {
   user_id?: number;
   transport?: McpDebugTransport;
   upstream_id?: number;
+  url?: string;
+  headers?: Record<string, string>;
   reveal?: boolean;
 }
 
