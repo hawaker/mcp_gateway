@@ -47,14 +47,21 @@ return redis.call('pexpire', KEYS[1], ARGV[2])
 
 @dataclass(frozen=True, slots=True)
 class CachedBizToken:
-    """Redis 里的一条业务 token，外加是否已过期。"""
+    """Redis 里的一条业务变量包，外加是否已过期。"""
 
     user_id: int
     system_id: int
-    access_token: str
+    vars: dict[str, str]
     expires_at: datetime
-    token_type: str
     expired: bool
+
+    @property
+    def access_token(self) -> str:
+        return self.vars.get("access_token") or ""
+
+    @property
+    def token_type(self) -> str:
+        return "Bearer"
 
 
 def _token_key(user_id: int, system_id: int) -> str:
@@ -99,20 +106,24 @@ def _ttl_seconds(expires_at: datetime) -> int:
 
 def _dump(bundle: TokenBundle) -> str:
     payload = {
-        "access_token": bundle.access_token,
+        "vars": dict(bundle.vars),
         "expires_at": _aware(bundle.expires_at).isoformat(),
-        "token_type": bundle.token_type,
     }
     return json.dumps(payload, ensure_ascii=False)
 
 
 def _load(raw: str) -> TokenBundle:
     data = json.loads(raw)
-    return TokenBundle(
-        access_token=str(data["access_token"]),
-        expires_at=_aware(datetime.fromisoformat(str(data["expires_at"]))),
-        token_type=str(data["token_type"]),
-    )
+    expires_at = _aware(datetime.fromisoformat(str(data["expires_at"])))
+    raw_vars = data.get("vars")
+    if isinstance(raw_vars, dict):
+        vars_ = {str(key): "" if value is None else str(value) for key, value in raw_vars.items()}
+        return TokenBundle(vars=vars_, expires_at=expires_at)
+    # 旧格式：只有 access_token / token_type
+    token = data.get("access_token")
+    if token is None:
+        raise ValueError("cached token missing vars")
+    return TokenBundle(vars={"access_token": str(token)}, expires_at=expires_at)
 
 
 def _row(user_id: int, system_id: int, bundle: TokenBundle) -> CachedBizToken:
@@ -120,9 +131,8 @@ def _row(user_id: int, system_id: int, bundle: TokenBundle) -> CachedBizToken:
     return CachedBizToken(
         user_id=user_id,
         system_id=system_id,
-        access_token=bundle.access_token,
+        vars=dict(bundle.vars),
         expires_at=expires_at,
-        token_type=bundle.token_type,
         expired=expires_at <= datetime.now(UTC),
     )
 

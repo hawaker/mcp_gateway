@@ -20,11 +20,11 @@ from app.modules.mcp_gateway.token_cache.store import _RELEASE_LOCK_SCRIPT, _REN
 _PAIRS = ((1, 10), (1, 20), (2, 10), (2, 20), (9, 9))
 
 
-def bundle(access_token: str, expires_at: datetime | None = None) -> TokenBundle:
+def bundle(access_token: str, expires_at: datetime | None = None, **extra: str) -> TokenBundle:
+    vars_ = {"access_token": access_token, **extra}
     return TokenBundle(
-        access_token=access_token,
+        vars=vars_,
         expires_at=expires_at or (datetime.now(UTC) + timedelta(hours=1)),
-        token_type="Bearer",
     )
 
 
@@ -211,6 +211,27 @@ async def test_put_sets_ttl_until_expires_at(cache: TokenCache) -> None:
     assert abs((loaded.expires_at - expires_at).total_seconds()) < 1
 
 
+async def test_put_get_roundtrip_vars(cache: TokenCache) -> None:
+    packed = TokenBundle(
+        vars={"access_token": "t1", "tenant_id": "9"},
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+    await cache.put(1, 2, packed)
+    got = await cache.get(1, 2)
+    assert got is not None
+    assert got.vars == {"access_token": "t1", "tenant_id": "9"}
+
+
+async def test_load_legacy_access_token_json(cache: TokenCache) -> None:
+    await cache.redis.set(
+        "mcp:biz-token:3:4",
+        '{"access_token":"legacy","expires_at":"2099-01-01T00:00:00+00:00","token_type":"Bearer"}',
+    )
+    got = await cache.get(3, 4)
+    assert got is not None
+    assert got.vars == {"access_token": "legacy"}
+
+
 async def test_same_pair_locks_exclude_each_other(cache: TokenCache) -> None:
     started = asyncio.Event()
     release = asyncio.Event()
@@ -380,7 +401,8 @@ async def test_admin_query_returns_cached_fields_and_empty_list(cache: TokenCach
 
     everyone = _body(await list_biz_token_cache_controller(auth=None, redis=cache.redis, user_id=None, system_id=None))  # type: ignore[arg-type]
     assert {row["access_token"] for row in everyone["data"]} == {"oa-token", "mes-token", "other-token"}
-    assert all({"access_token", "expires_at", "token_type", "expired"} <= set(item) for item in everyone["data"])
+    assert all({"access_token", "expires_at", "token_type", "expired", "vars", "var_keys"} <= set(item) for item in everyone["data"])
+    assert all(isinstance(item["vars"], dict) for item in everyone["data"])
 
 
 def test_admin_route_lists_cache_for_query_permission() -> None:

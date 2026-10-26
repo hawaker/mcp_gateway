@@ -31,6 +31,8 @@ async def list_biz_token_cache_controller(
         {
             "user_id": row.user_id,
             "system_id": row.system_id,
+            "vars": row.vars,
+            "var_keys": sorted(row.vars.keys()),
             "access_token": row.access_token,
             "expires_at": row.expires_at,
             "token_type": row.token_type,
