@@ -119,3 +119,52 @@ async def test_only_one_enabled_auth_config_per_system(db) -> None:
         dump = item.model_dump()
         assert "password" not in dump
         assert "password_encrypted" not in dump
+
+
+async def test_custom_auth_persists_request_shape(db) -> None:
+    system = await _system(db, "oa-custom-shape")
+    service = AuthConfigService(_auth(), db)
+    created = await service.create(
+        AuthConfigCreateSchema(
+            system_id=system.id,
+            method="custom",
+            enabled=True,
+            url="https://oa.example.com/login",
+            rule={"token_from": "json", "token_name": "token"},
+            http_method="POST",
+            headers={"X-App": "{{system.client_id}}"},
+            query={"uid": "{{user.uid}}"},
+            body_type="json",
+            body={"dept": "{{user.attr.dept}}"},
+        )
+    )
+    assert created.headers == {"X-App": "{{system.client_id}}"}
+    assert created.query == {"uid": "{{user.uid}}"}
+    assert created.body_type == "json"
+    assert created.body == {"dept": "{{user.attr.dept}}"}
+    assert "query" not in created.rule
+
+    row = await db.get(AuthConfigModel, created.id)
+    assert row is not None
+    assert row.body_type == "json"
+    assert row.headers == {"X-App": "{{system.client_id}}"}
+
+
+async def test_fixed_auth_clears_request_shape_fields(db) -> None:
+    system = await _system(db, "oa-fixed-clear")
+    service = AuthConfigService(_auth(), db)
+    created = await service.create(
+        AuthConfigCreateSchema(
+            system_id=system.id,
+            method="fixed",
+            enabled=True,
+            url="https://oa.example.com/login",
+            rule={},
+            headers={"X": "1"},
+            body_type="json",
+            body={"a": 1},
+        )
+    )
+    assert created.headers is None
+    assert created.body_type is None
+    assert created.body is None

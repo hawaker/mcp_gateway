@@ -12,6 +12,7 @@ from .schema import (
     AuthConfigOutSchema,
     AuthConfigQueryParam,
     AuthConfigUpdateSchema,
+    ensure_custom_request_fields,
     ensure_method_fields,
 )
 
@@ -78,6 +79,23 @@ class AuthConfigService:
         password = submitted.get("password")
         if isinstance(password, str) and password.strip():
             payload["password_encrypted"] = CryptoUtil.encrypt(password.strip())
+        merged_shape = {
+            "headers": payload["headers"] if "headers" in payload else current.headers,
+            "query": payload["query"] if "query" in payload else current.query,
+            "body_type": payload["body_type"] if "body_type" in payload else current.body_type,
+            "body": payload["body"] if "body" in payload else current.body,
+        }
+        if method == "custom":
+            headers, query, body_type, body = ensure_custom_request_fields(
+                method,
+                merged_shape["headers"],
+                merged_shape["query"],
+                merged_shape["body_type"],
+                merged_shape["body"],
+            )
+            payload.update({"headers": headers, "query": query, "body_type": body_type, "body": body})
+        elif "method" in payload or any(key in payload for key in ("headers", "query", "body_type", "body")):
+            payload.update({"headers": None, "query": None, "body_type": None, "body": None})
         if not payload:
             return AuthConfigOutSchema.model_validate(current)
         obj = await AuthConfigCRUD(self.auth, self.db).update(id=config_id, data=payload)
@@ -113,6 +131,20 @@ class AuthConfigService:
             payload["password_encrypted"] = CryptoUtil.encrypt(data.password)
         else:
             payload["password_encrypted"] = None
+        return AuthConfigService._normalize_request_shape(data.method, payload)
+
+    @staticmethod
+    def _normalize_request_shape(method: str, payload: dict) -> dict:
+        if method != "custom":
+            payload["headers"] = None
+            payload["query"] = None
+            payload["body_type"] = None
+            payload["body"] = None
+            return payload
+        if payload.get("body_type") is None:
+            payload["body_type"] = "none"
+        if payload.get("body_type") == "none":
+            payload["body"] = None
         return payload
 
     @staticmethod
