@@ -108,6 +108,7 @@
       width="560px"
       dialog-class="crud-embed-dialog"
       modal-class="crud-embed-dialog"
+      form-mode="create"
       :confirm-loading="toolSubmitLoading"
       @cancel="toolFormVisible = false"
       @close="toolFormVisible = false"
@@ -168,6 +169,7 @@
       width="560px"
       dialog-class="crud-embed-dialog"
       modal-class="crud-embed-dialog"
+      form-mode="create"
       :confirm-loading="memberSubmitLoading"
       @cancel="memberFormVisible = false"
       @close="memberFormVisible = false"
@@ -200,7 +202,7 @@
       @close="connectionDialogVisible = false"
     >
       <div class="mcp-group-panel">
-        <p class="mcp-group-panel__hint">列表只显示谁有凭证。明文只在下方的 Authorization 里出现。</p>
+        <p class="mcp-group-panel__hint">列表只显示谁有凭证。点「查看」后生成可复制的 MCP 配置，明文只出现在下方 JSON 的 headers 里。</p>
         <FaTable
           :loading="credentialLoading"
           :data="credentialData"
@@ -209,19 +211,17 @@
           @pagination:size-change="handleCredentialSizeChange"
           @pagination:current-change="handleCredentialCurrentChange"
         />
-        <FaForm
-          v-if="connectionInfo"
-          v-model="connectionForm"
-          :items="connectionFormItems"
-          label-suffix=":"
-          :label-width="160"
-          label-position="right"
-          :span="24"
-          :gutter="16"
-          :show-reset="false"
-          :show-submit="false"
-          class="crud-dialog-art-form"
-        />
+        <div v-if="connectionInfo" class="mcp-connection-snippet">
+          <ElTabs v-model="connectionTab" class="mcp-connection-snippet__tabs">
+            <ElTabPane label="streamable-http" name="streamable-http" />
+            <ElTabPane label="sse" name="sse" />
+          </ElTabs>
+          <div class="mcp-connection-snippet__bar">
+            <span>MCP 客户端配置</span>
+            <FaCopyButton :text="connectionSnippet" />
+          </div>
+          <pre class="mcp-connection-snippet__code">{{ connectionSnippet }}</pre>
+        </div>
       </div>
     </FaDialog>
   </div>
@@ -245,6 +245,7 @@ import UpstreamAPI, { type UpstreamToolTable } from "@/api/module_mcp_gateway/up
 import BizUserAPI, { type BizUserGroupTable, type BizUserTable } from "@/api/module_mcp_gateway/user";
 import type { FormItem } from "@/components/forms/fa-form/index.vue";
 import type { SearchFormItem } from "@/components/forms/fa-search-bar/index.vue";
+import FaCopyButton from "@/components/actions/fa-copy-button/index.vue";
 import FaForm from "@/components/forms/fa-form/index.vue";
 import FaTableHeader from "@/components/tables/fa-table-header/index.vue";
 import { renderTableOperationCell, type TableOperationAction } from "@utils";
@@ -261,7 +262,7 @@ const ENABLED_OPTIONS = [
 
 const SOURCE_OPTIONS = [
   { label: "REST 工具", value: "rest" },
-  { label: "上游工具", value: "upstream" },
+  { label: "MCP 代理工具", value: "upstream" },
 ] as const;
 
 const PRINCIPAL_OPTIONS = [
@@ -501,7 +502,7 @@ const {
         prop: "source",
         label: "来源",
         width: 100,
-        formatter: (row: McpGroupToolTable) => (row.source === "upstream" ? "上游工具" : "REST 工具"),
+        formatter: (row: McpGroupToolTable) => (row.source === "upstream" ? "MCP 代理工具" : "REST 工具"),
       },
       { prop: "external_name", label: "外部名称", minWidth: 180, showOverflowTooltip: true },
       {
@@ -740,29 +741,49 @@ async function toggleMember(row: McpGroupMemberTable) {
 
 const connectionDialogVisible = ref(false);
 const connectionInfo = ref<McpConnectionInfo | null>(null);
-const connectionForm = ref({
-  streamable_http_url: "",
-  sse_url: "",
-  messages_url: "",
-  authorization: "",
-});
+const connectionTab = ref<"streamable-http" | "sse">("streamable-http");
+
+function mcpAbsoluteUrl(path: string): string {
+  const base = String(import.meta.env.VITE_API_BASE_URL || window.location.origin).replace(/\/$/, "");
+  return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function bearerAuthorization(authorization: string): string {
+  return authorization.replace(/^Authorization:\s*/i, "").trim();
+}
 
 function showConnection(info: McpConnectionInfo) {
   connectionInfo.value = info;
-  connectionForm.value = {
-    streamable_http_url: info.streamable_http_url,
-    sse_url: info.sse_url,
-    messages_url: info.messages_url,
-    authorization: info.authorization,
-  };
+  connectionTab.value = "streamable-http";
 }
 
-const connectionFormItems = computed<FormItem[]>(() => [
-  { label: "Streamable HTTP", key: "streamable_http_url", type: "input", span: 24, props: { readonly: true } },
-  { label: "SSE", key: "sse_url", type: "input", span: 24, props: { readonly: true } },
-  { label: "消息", key: "messages_url", type: "input", span: 24, props: { readonly: true } },
-  { label: "Authorization", key: "authorization", type: "input", span: 24, props: { readonly: true } },
-]);
+const connectionSnippet = computed(() => {
+  const info = connectionInfo.value;
+  if (!info) return "";
+  const headers = {
+    Authorization: bearerAuthorization(info.authorization),
+  };
+  if (connectionTab.value === "sse") {
+    return JSON.stringify(
+      {
+        type: "sse",
+        url: mcpAbsoluteUrl(info.sse_url),
+        headers,
+      },
+      null,
+      2,
+    );
+  }
+  return JSON.stringify(
+    {
+      type: "streamable-http",
+      url: mcpAbsoluteUrl(info.streamable_http_url),
+      headers,
+    },
+    null,
+    2,
+  );
+});
 
 function credentialActions(row: McpCredentialTable): TableOperationAction[] {
   return [
@@ -863,5 +884,53 @@ async function renewConnection(row: McpCredentialTable) {
 .mcp-group-panel__hint {
   margin: 0 0 12px;
   color: var(--el-text-color-secondary);
+}
+
+.mcp-connection-snippet {
+  margin-top: 16px;
+  overflow: hidden;
+  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border-radius: 8px;
+}
+
+.mcp-connection-snippet__tabs {
+  padding: 0 12px;
+  background: var(--el-fill-color-light, #f5f7fa);
+  border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5);
+}
+
+.mcp-connection-snippet__tabs :deep(.el-tabs__header) {
+  margin: 0;
+}
+
+.mcp-connection-snippet__tabs :deep(.el-tabs__nav-wrap::after) {
+  display: none;
+}
+
+.mcp-connection-snippet__tabs :deep(.el-tabs__item) {
+  height: 40px;
+  font-size: 13px;
+}
+
+.mcp-connection-snippet__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5);
+}
+
+.mcp-connection-snippet__code {
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--el-text-color-primary);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+  word-break: break-all;
 }
 </style>

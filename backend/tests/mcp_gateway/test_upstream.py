@@ -36,7 +36,8 @@ def _upstream(**overrides: Any):
 
     data: dict[str, Any] = {
         "id": UPSTREAM_ID,
-        "system_id": SYSTEM_ID,
+        "name": "OA Proxy",
+        "code": SYSTEM_CODE,
         "url": UPSTREAM_URL,
         "credential_header": HEADER_NAME,
         "credential_value_encrypted": _cipher(),
@@ -252,7 +253,7 @@ def test_create_payload_stores_ciphertext_and_responses_omit_plaintext() -> None
 
     payload = upstream_create_payload(
         UpstreamMcpCreateSchema(
-            system_id=SYSTEM_ID,
+            name="OA Proxy", code=SYSTEM_CODE,
             url=UPSTREAM_URL,
             credential_header=HEADER_NAME,
             credential_value=PLAIN_CREDENTIAL,
@@ -286,32 +287,32 @@ def test_schema_rejects_url_without_http_scheme() -> None:
 
     with pytest.raises(ValidationError):
         UpstreamMcpCreateSchema(
-            system_id=SYSTEM_ID,
+            name="OA Proxy", code=SYSTEM_CODE,
             url="ftp://mcp.example.com/rpc",
             credential_header=HEADER_NAME,
             credential_value=PLAIN_CREDENTIAL,
         )
 
 
-def test_system_id_is_not_unique() -> None:
-    """一个业务系统可以挂多个上游 MCP。"""
+def test_code_is_unique() -> None:
+    """代理英文编码全局唯一。"""
     from app.modules.mcp_gateway.upstream.model import UpstreamMcpModel
 
-    table = UpstreamMcpModel.__table__
-    for constraint in table.constraints:
-        columns = [column.name for column in getattr(constraint, "columns", [])]
-        if columns == ["system_id"]:
-            assert getattr(constraint, "unique", False) is False
-    for index in table.indexes:
-        if [column.name for column in index.columns] == ["system_id"]:
-            assert index.unique is False
+    for index in UpstreamMcpModel.__table__.indexes:
+        columns = [column.name for column in index.columns]
+        if columns == ["code"]:
+            assert index.unique
+            return
+    assert False, "missing unique index on code"
 
 
-def test_update_schema_has_no_system_id() -> None:
-    """创建之后 system_id 不再可写。改系统会让旧外部名停在原来的 code 前缀上。"""
+
+def test_update_schema_has_no_code() -> None:
+    """创建之后 code 不再可写。"""
     from app.modules.mcp_gateway.upstream.schema import UpstreamMcpUpdateSchema
 
-    assert "system_id" not in UpstreamMcpUpdateSchema.model_fields
+    assert "code" not in UpstreamMcpUpdateSchema.model_fields
+    assert "name" in UpstreamMcpUpdateSchema.model_fields
 
 
 def test_tool_remote_name_is_unique_per_upstream() -> None:

@@ -87,7 +87,8 @@ async def _upstream_row(db, system_id: int) -> UpstreamMcpModel:
     return await _add(
         db,
         UpstreamMcpModel(
-            system_id=system_id,
+            name="Proxy",
+            code="oa",
             url="https://upstream.example.com/mcp",
             credential_header="X-Api-Key",
             credential_value_encrypted=CryptoUtil.encrypt(_UPSTREAM_SECRET),

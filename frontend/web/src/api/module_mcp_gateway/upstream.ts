@@ -10,11 +10,12 @@ function emptyToUndefined(value: string | undefined): string | undefined {
 export function toUpstreamPayload(body: UpstreamForm, mode: "create" | "update") {
   const credential = emptyToUndefined(body.credential_value);
   const payload: Record<string, unknown> = {
+    name: (body.name ?? "").trim(),
     url: (body.url ?? "").trim(),
     credential_header: (body.credential_header ?? "").trim(),
   };
   if (mode === "create") {
-    payload.system_id = body.system_id;
+    payload.code = (body.code ?? "").trim();
   }
   if (mode === "create" || credential) {
     payload.credential_value = credential ?? "";
@@ -89,19 +90,22 @@ const UpstreamAPI = {
 export default UpstreamAPI;
 
 export interface UpstreamPageQuery extends PageQuery {
-  system_id?: number;
+  name?: string;
+  code?: string;
   url?: string;
   credential_header?: string;
 }
 
 export interface UpstreamTable extends BaseType {
-  system_id?: number;
+  name?: string;
+  code?: string;
   url?: string;
   credential_header?: string;
 }
 
 export interface UpstreamForm extends BaseFormType {
-  system_id?: number;
+  name?: string;
+  code?: string;
   url?: string;
   credential_header?: string;
   credential_value?: string;

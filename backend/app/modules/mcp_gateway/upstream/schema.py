@@ -21,12 +21,23 @@ def _http_url(value: str) -> str:
 
 
 class UpstreamMcpCreateSchema(BaseModel):
-    """创建一个上游 MCP。credential_value 只在请求里出现，不会原样入库。"""
+    """创建 MCP 代理。credential_value 只在请求里出现，不会原样入库。code 创建后不可改。"""
 
-    system_id: int = Field(..., ge=1, description="业务系统ID")
+    name: str = Field(..., min_length=1, max_length=128, description="名称")
+    code: str = Field(..., min_length=1, max_length=64, description="英文编码")
     url: str = Field(..., min_length=1, max_length=2048, description="上游地址")
     credential_header: str = Field(..., min_length=1, max_length=128, description="凭证请求头")
     credential_value: str = Field(..., min_length=1, max_length=8192, description="凭证")
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        return _strip_required(value, "名称")
+
+    @field_validator("code")
+    @classmethod
+    def _validate_code(cls, value: str) -> str:
+        return _strip_required(value, "英文编码")
 
     @field_validator("url")
     @classmethod
@@ -45,11 +56,19 @@ class UpstreamMcpCreateSchema(BaseModel):
 
 
 class UpstreamMcpUpdateSchema(BaseModel):
-    """更新上游 MCP。system_id 只在创建时写入。省略凭证或传空字符串时保留原密文。"""
+    """更新 MCP 代理。不能改 code。省略凭证或传空字符串时保留原密文。"""
 
+    name: str | None = Field(default=None, min_length=1, max_length=128, description="名称")
     url: str | None = Field(default=None, min_length=1, max_length=2048, description="上游地址")
     credential_header: str | None = Field(default=None, min_length=1, max_length=128, description="凭证请求头")
     credential_value: str | None = Field(default=None, max_length=8192, description="凭证")
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _strip_required(value, "名称")
 
     @field_validator("url")
     @classmethod
@@ -75,29 +94,31 @@ class UpstreamMcpUpdateSchema(BaseModel):
 
 
 class UpstreamMcpOutSchema(BaseSchema):
-    """上游 MCP 响应。不含凭证明文，也不回传密文。"""
+    """MCP 代理响应。不含凭证明文，也不回传密文。"""
 
     model_config = ConfigDict(from_attributes=True)
 
-    system_id: int = Field(..., description="业务系统ID")
+    name: str = Field(..., description="名称")
+    code: str = Field(..., description="英文编码")
     url: str = Field(..., description="上游地址")
     credential_header: str = Field(..., description="凭证请求头")
 
 
 class UpstreamMcpQueryParam(BaseQueryParam):
-    """上游 MCP 查询参数。"""
+    """MCP 代理查询参数。"""
 
-    system_id: int | None = Field(None, description="业务系统ID", json_schema_extra={"q": "eq"})
+    name: str | None = Field(None, description="名称", json_schema_extra={"q": "like"})
+    code: str | None = Field(None, description="英文编码", json_schema_extra={"q": "like"})
     url: str | None = Field(None, description="上游地址", json_schema_extra={"q": "like"})
     credential_header: str | None = Field(None, description="凭证请求头", json_schema_extra={"q": "like"})
 
 
 class UpstreamToolOutSchema(BaseSchema):
-    """上游工具响应。"""
+    """MCP 代理工具响应。"""
 
     model_config = ConfigDict(from_attributes=True)
 
-    upstream_id: int = Field(..., description="上游 MCP ID")
+    upstream_id: int = Field(..., description="MCP 代理 ID")
     remote_name: str = Field(..., description="远端工具名")
     external_name: str = Field(..., description="外部名称")
     input_schema: dict[str, Any] = Field(default_factory=dict, description="入参结构")
@@ -111,9 +132,9 @@ class UpstreamToolUpdateSchema(BaseModel):
 
 
 class UpstreamToolQueryParam(BaseQueryParam):
-    """上游工具查询参数。"""
+    """MCP 代理工具查询参数。"""
 
-    upstream_id: int | None = Field(None, description="上游 MCP ID", json_schema_extra={"q": "eq"})
+    upstream_id: int | None = Field(None, description="MCP 代理 ID", json_schema_extra={"q": "eq"})
     remote_name: str | None = Field(None, description="远端工具名", json_schema_extra={"q": "like"})
     external_name: str | None = Field(None, description="外部名称", json_schema_extra={"q": "like"})
     selected: bool | None = Field(None, description="是否选用", json_schema_extra={"q": "eq"})

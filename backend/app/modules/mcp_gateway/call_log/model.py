@@ -17,6 +17,7 @@ class CallLogModel(MappedBase):
     group_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="MCP 组ID")
     tool_name: Mapped[str] = mapped_column(String(512), nullable=False, index=True, comment="工具名称")
     system_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True, comment="业务系统ID")
+    upstream_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True, comment="MCP 代理ID")
     elapsed_ms: Mapped[int] = mapped_column(Integer, nullable=False, comment="耗时毫秒")
     ok: Mapped[bool] = mapped_column(Boolean, nullable=False, comment="是否成功")
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="上游 HTTP 状态码")

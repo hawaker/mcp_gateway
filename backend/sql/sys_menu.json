@@ -4487,7 +4487,7 @@
 				"show_text_badge": null
 			},
 			{
-				"name": "上游 MCP",
+				"name": "MCP 代理",
 				"type": 2,
 				"icon": "ri:file-list-3-line",
 				"order": 7,
@@ -4499,7 +4499,7 @@
 				"keep_alive": true,
 				"hidden": false,
 				"always_show": false,
-				"title": "上游 MCP",
+				"title": "MCP 代理",
 				"params": null,
 				"affix": false,
 				"redirect": null,

@@ -1,4 +1,4 @@
-<!-- 上游 MCP：凭证只写不回显。拉取工具后默认未选用，管理员再勾选。 -->
+<!-- MCP 代理：凭证只写不回显。拉取工具后默认未选用，管理员再勾选。 -->
 <template>
   <div class="fa-full-height">
     <FaSearchBar
@@ -71,7 +71,7 @@
 
     <FaDialog
       v-model="toolDialogVisible"
-      title="上游工具"
+      title="代理工具"
       width="920px"
       dialog-class="crud-embed-dialog"
       modal-class="crud-embed-dialog"
@@ -108,7 +108,6 @@
 
 <script setup lang="ts">
 import { ElMessage } from "element-plus";
-import BizSystemAPI, { type BizSystemTable } from "@/api/module_mcp_gateway/system";
 import UpstreamAPI, {
   type UpstreamForm,
   type UpstreamPageQuery,
@@ -130,36 +129,12 @@ function selectedText(selected?: boolean) {
   return selected ? "已选用" : "未选用";
 }
 
-const systems = ref<BizSystemTable[]>([]);
-const systemOptions = computed(() =>
-  systems.value
-    .filter((item) => item.id)
-    .map((item) => ({
-      label: item.code ? `${item.name}（${item.code}）` : (item.name ?? String(item.id)),
-      value: item.id,
-    })),
-);
-
-function systemLabel(systemId?: number) {
-  return systemOptions.value.find((item) => item.value === systemId)?.label ?? (systemId ? String(systemId) : "");
-}
-
-async function loadSystems() {
-  const response = await BizSystemAPI.listSystem({ page_no: 1, page_size: 100 });
-  systems.value = response.data.data?.items ?? [];
-}
-
 const showSearch = ref(true);
-const searchForm = ref<UpstreamPageQuery>({ system_id: undefined, url: undefined, credential_header: undefined });
+const searchForm = ref<UpstreamPageQuery>({ name: undefined, code: undefined, url: undefined, credential_header: undefined });
 const searchBarRef = ref();
 const searchItems = computed<SearchFormItem[]>(() => [
-  {
-    label: "业务系统",
-    key: "system_id",
-    type: "select",
-    props: { placeholder: "请选择", options: systemOptions.value, clearable: true, filterable: true },
-    span: 6,
-  },
+  { label: "名称", key: "name", type: "input", placeholder: "请输入名称", clearable: true, span: 6 },
+  { label: "编码", key: "code", type: "input", placeholder: "请输入编码", clearable: true, span: 6 },
   { label: "上游地址", key: "url", type: "input", placeholder: "请输入上游地址", clearable: true, span: 6 },
   { label: "凭证请求头", key: "credential_header", type: "input", placeholder: "请输入请求头名称", clearable: true, span: 6 },
 ]);
@@ -213,13 +188,8 @@ const {
     apiParams: { page_no: 1, page_size: 10 },
     columnsFactory: () => [
       { type: "globalIndex", width: 56, label: "序号" },
-      {
-        prop: "system_id",
-        label: "业务系统",
-        minWidth: 160,
-        showOverflowTooltip: true,
-        formatter: (row: UpstreamTable) => systemLabel(row.system_id),
-      },
+      { prop: "name", label: "名称", minWidth: 140, showOverflowTooltip: true },
+      { prop: "code", label: "编码", minWidth: 120, showOverflowTooltip: true },
       { prop: "url", label: "上游地址", minWidth: 240, showOverflowTooltip: true },
       { prop: "credential_header", label: "凭证请求头", minWidth: 140, showOverflowTooltip: true },
       { prop: "created_time", label: "创建时间", width: 168, showOverflowTooltip: true },
@@ -241,7 +211,8 @@ const {
 function createInitialForm(): UpstreamForm {
   return {
     id: undefined,
-    system_id: undefined,
+    name: "",
+    code: "",
     url: "",
     credential_header: "",
     credential_value: "",
@@ -254,7 +225,8 @@ const { dialogVisible } = useCrudDialog();
 const formRef = ref<InstanceType<typeof FaForm> | null>(null);
 const formRenderKey = ref(0);
 const rules = reactive({
-  system_id: [{ required: true, message: "请选择业务系统", trigger: "change" }],
+  name: [{ required: true, message: "请输入名称", trigger: "blur" }],
+  code: [{ required: true, message: "请输入英文编码", trigger: "blur" }],
   url: [
     {
       validator: (_rule: unknown, value: string, callback: (error?: Error) => void) => {
@@ -289,14 +261,20 @@ const rules = reactive({
 
 const dialogFormItems = computed<FormItem[]>(() => [
   {
-    label: "业务系统",
-    key: "system_id",
-    type: "select",
+    label: "名称",
+    key: "name",
+    type: "input",
+    span: 24,
+    props: { placeholder: "显示名称", maxlength: 128 },
+  },
+  {
+    label: "英文编码",
+    key: "code",
+    type: "input",
     span: 24,
     props: {
-      placeholder: "请选择业务系统",
-      options: systemOptions.value,
-      filterable: true,
+      placeholder: "创建后不可改，用于工具名前缀",
+      maxlength: 64,
       disabled: dialogVisible.type === "update",
     },
   },
@@ -334,7 +312,8 @@ async function detailForForm(id: number) {
   const data: UpstreamForm | undefined = row
     ? {
         id: row.id,
-        system_id: row.system_id,
+        name: row.name ?? "",
+        code: row.code ?? "",
         url: row.url ?? "",
         credential_header: row.credential_header ?? "",
         credential_value: "",
@@ -352,7 +331,7 @@ const { submitLoading, handleCloseDialog, handleOpenDialog, handleSubmit } = use
   detailApi: detailForForm,
   createApi: UpstreamAPI.createUpstream,
   updateApi: UpstreamAPI.updateUpstream,
-  titles: { create: "新增上游 MCP", update: "修改上游 MCP" },
+  titles: { create: "新增 MCP 代理", update: "修改 MCP 代理" },
   onCreateSuccess: async () => {
     await refreshCreate();
   },
@@ -364,7 +343,6 @@ const { submitLoading, handleCloseDialog, handleOpenDialog, handleSubmit } = use
 async function handleAdd() {
   createLoading.value = true;
   try {
-    await loadSystems();
     await handleOpenDialog("create");
   } finally {
     createLoading.value = false;
@@ -373,7 +351,6 @@ async function handleAdd() {
 
 async function openEdit(row: UpstreamTable) {
   if (!row.id) return;
-  await loadSystems();
   await handleOpenDialog("update", row.id);
 }
 
@@ -390,7 +367,8 @@ async function removeUpstream(row: UpstreamTable) {
 
 async function handleSearch(params: UpstreamPageQuery) {
   replaceSearchParams({
-    system_id: params.system_id,
+    name: params.name,
+    code: params.code,
     url: params.url,
     credential_header: params.credential_header,
   });
@@ -398,7 +376,7 @@ async function handleSearch(params: UpstreamPageQuery) {
 }
 
 async function onResetSearch() {
-  searchForm.value = { system_id: undefined, url: undefined, credential_header: undefined };
+  searchForm.value = { name: undefined, code: undefined, url: undefined, credential_header: undefined };
   await resetSearchParams();
 }
 
@@ -468,7 +446,7 @@ const {
 async function openTools(row: UpstreamTable) {
   if (!row.id) return;
   toolUpstreamId.value = row.id;
-  toolUpstreamLabel.value = row.url ?? systemLabel(row.system_id);
+  toolUpstreamLabel.value = row.name ? `${row.name}（${row.code ?? ""}）` : (row.url ?? String(row.id));
   toolDialogVisible.value = true;
   replaceToolSearch({ upstream_id: row.id, remote_name: undefined, external_name: undefined, selected: undefined });
   await getToolData();
@@ -480,7 +458,7 @@ async function handleRefreshTools() {
   try {
     await UpstreamAPI.refreshTools(toolUpstreamId.value);
     await getToolData();
-    ElMessage.success("已拉取上游工具");
+    ElMessage.success("已拉取代理工具");
   } finally {
     refreshLoading.value = false;
   }
@@ -492,9 +470,6 @@ async function setSelected(row: UpstreamToolTable, selected: boolean) {
   await getToolData();
 }
 
-onMounted(() => {
-  void loadSystems();
-});
 </script>
 
 <style scoped>

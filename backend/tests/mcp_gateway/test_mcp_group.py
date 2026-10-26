@@ -105,11 +105,14 @@ async def _rest(db, system_id: int, name: str = "search") -> RestToolModel:
     )
 
 
-async def _upstream(db, system_id: int) -> UpstreamMcpModel:
+async def _upstream(db, system_id: int = 0, *, code: str | None = None) -> UpstreamMcpModel:
+    import secrets
+
     return await _add(
         db,
         UpstreamMcpModel(
-            system_id=system_id,
+            name="Proxy",
+            code=code or f"up{secrets.token_hex(4)}",
             url="https://mcp.example.com/rpc",
             credential_header="X-Api-Key",
             credential_value_encrypted=CryptoUtil.encrypt("upstream-secret"),

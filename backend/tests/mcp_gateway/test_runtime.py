@@ -273,6 +273,46 @@ async def test_tools_list_returns_only_enabled_group_tools(db) -> None:
     assert gateway.requests == []
 
 
+async def test_tools_list_normalizes_empty_input_schema(db) -> None:
+    """库里 input_schema 为空对象时，tools/list 仍返回带 type=object 的合法 Schema。"""
+    user = await _user(db)
+    system = await _system(db, "oa_empty_schema", base_url="https://oa.example.com")
+    await _auth_config(db, system.id)
+    await _binding(db, user.id, system.id)
+    tool = await _add(
+        db,
+        RestToolModel(
+            name="pending",
+            display_name="查询本人的待办事项",
+            url="/todos",
+            description="查询本人的待办事项",
+            request_type="GET",
+            headers={},
+            input_schema={},
+            output_schema={},
+            jsonpath_filter=None,
+            query_mapping={},
+            header_mapping={},
+            token_in="header",
+            enabled=True,
+            system_id=system.id,
+        ),
+    )
+    group = await _mcp_group(db, "空 Schema")
+    token = await _member(db, group.id, user.id)
+    await _publish_rest(db, group.id, tool.id, "pending")
+    redis = ExpiringRedis()
+
+    async with _client(group.id, db, redis, httpx.MockTransport(_Gateway().handler)) as client:
+        await _initialize(client, group.id, token)
+        listed = await client.post(f"/mcp/{group.id}", headers=_headers(token), json=_rpc("tools/list"))
+
+    assert listed.status_code == 200
+    schema = listed.json()["result"]["tools"][0]["inputSchema"]
+    assert schema["type"] == "object"
+    assert schema["properties"] == {}
+
+
 async def test_disabled_group_tool_call_is_denied_without_oa_request(db) -> None:
     """组内禁用的工具，tools/call 返回无权限，OA 收到 0 次请求。"""
     user = await _user(db)
@@ -407,7 +447,8 @@ async def test_upstream_call_forwards_without_ensure_token(db, monkeypatch: pyte
     upstream = await _add(
         db,
         UpstreamMcpModel(
-            system_id=system.id,
+            name="Proxy",
+            code="oa",
             url="https://upstream.example.com/rpc",
             credential_header="X-Api-Key",
             credential_value_encrypted=CryptoUtil.encrypt("upstream-secret"),

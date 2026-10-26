@@ -36,7 +36,7 @@ class DebugTargetSchema(BaseModel):
     group_id: int | None = Field(default=None, description="MCP 组 ID")
     user_id: int | None = Field(default=None, description="业务用户 ID")
     transport: str | None = Field(default=None, description="streamable_http 或 sse")
-    upstream_id: int | None = Field(default=None, description="上游 MCP ID")
+    upstream_id: int | None = Field(default=None, description="MCP 代理 ID")
     url: str | None = Field(default=None, description="自定义 MCP URL")
     headers: dict[str, str] = Field(default_factory=dict, description="自定义请求头")
     reveal: bool = Field(default=False, description="为真时不遮住 token")
@@ -461,7 +461,7 @@ class DebugService:
     async def _upstream_rpc(self, upstream_id: int, method: str, params: dict[str, Any]) -> _Exchange:
         upstream = await UpstreamMcpCRUD(self.auth, self.db).get(id=upstream_id)
         if upstream is None:
-            raise CustomException(msg="上游 MCP 不存在")
+            raise CustomException(msg="MCP 代理 不存在")
         credential = CryptoUtil.decrypt(upstream.credential_value_encrypted)
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         status, content, sent_headers = await _upstream_post(upstream, credential, payload, self.transport)

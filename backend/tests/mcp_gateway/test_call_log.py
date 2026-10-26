@@ -47,6 +47,7 @@ _COLUMNS = {
     "group_id",
     "tool_name",
     "system_id",
+    "upstream_id",
     "elapsed_ms",
     "ok",
     "http_status",
@@ -76,6 +77,7 @@ def test_call_log_table_has_no_body_or_mixin_columns() -> None:
     assert not issubclass(CallLogModel, ModelMixin)
     assert set(CallLogModel.__table__.columns.keys()) == _COLUMNS
     assert CallLogModel.system_id.nullable
+    assert CallLogModel.upstream_id.nullable
     assert CallLogModel.http_status.nullable
 
 
@@ -341,7 +343,8 @@ async def test_upstream_401_stores_status_and_ok_false(db) -> None:
     upstream = await _add(
         db,
         UpstreamMcpModel(
-            system_id=system.id,
+            name="Proxy",
+            code="oa",
             url="https://upstream.example.com/rpc",
             credential_header="X-Api-Key",
             credential_value_encrypted=CryptoUtil.encrypt("upstream-secret"),
@@ -374,7 +377,8 @@ async def test_upstream_401_stores_status_and_ok_false(db) -> None:
     assert row.user_id == user.id
     assert row.group_id == group.id
     assert row.tool_name == "portal_search"
-    assert row.system_id == system.id
+    assert row.system_id is None
+    assert row.upstream_id == upstream.id
     assert row.http_status == 401
     assert row.ok is False
     blob = _blob(row)

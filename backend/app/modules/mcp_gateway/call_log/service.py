@@ -26,6 +26,8 @@ class CallLogService:
         elapsed_ms: int,
         ok: bool,
         http_status: int | None,
+        *,
+        upstream_id: int | None = None,
     ) -> None:
         await CallLogCRUD(self.auth, self.db).create(
             data={
@@ -33,6 +35,7 @@ class CallLogService:
                 "group_id": group_id,
                 "tool_name": tool_name,
                 "system_id": system_id,
+                "upstream_id": upstream_id,
                 "elapsed_ms": elapsed_ms,
                 "ok": ok,
                 "http_status": http_status,

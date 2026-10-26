@@ -10,7 +10,7 @@
           <span class="mcp-debug__label">目标</span>
           <ElRadioGroup v-model="target">
             <ElRadioButton value="group">MCP 组</ElRadioButton>
-            <ElRadioButton value="upstream">上游 MCP</ElRadioButton>
+            <ElRadioButton value="upstream">MCP 代理</ElRadioButton>
             <ElRadioButton value="custom">自定义</ElRadioButton>
           </ElRadioGroup>
         </div>
@@ -39,7 +39,7 @@
 
         <template v-else-if="target === 'upstream'">
           <div class="mcp-debug__row">
-            <span class="mcp-debug__label">上游 MCP</span>
+            <span class="mcp-debug__label">MCP 代理</span>
             <ElSelect v-model="upstreamId" filterable clearable placeholder="选择上游" class="mcp-debug__control">
               <ElOption
                 v-for="item in upstreams"
@@ -242,7 +242,7 @@ function buildTarget(): McpDebugTarget | null {
   }
   if (target.value === "upstream") {
     if (!upstreamId.value) {
-      ElMessage.warning("请选择上游 MCP");
+      ElMessage.warning("请选择MCP 代理");
       return null;
     }
     return {
@@ -361,6 +361,15 @@ onMounted(loadOptions);
 </script>
 
 <style scoped>
+/* fa-page-view 会把本页压成 flex-1 + min-h-0；卡片默认可收缩且 overflow:hidden，会把连接/Tools 挤没 */
+.mcp-debug {
+  overflow: auto;
+}
+
+.mcp-debug > :deep(.el-card) {
+  flex-shrink: 0;
+}
+
 .mcp-debug__row {
   display: flex;
   align-items: center;

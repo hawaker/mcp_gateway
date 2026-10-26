@@ -24,7 +24,6 @@ from app.modules.mcp_gateway.mcp_group.crud import McpGroupToolCRUD
 from app.modules.mcp_gateway.mcp_group.service import McpGroupService
 from app.modules.mcp_gateway.rest_tool.crud import RestToolCRUD
 from app.modules.mcp_gateway.rest_tool.service import RestToolService
-from app.modules.mcp_gateway.system.crud import BizSystemCRUD
 from app.modules.mcp_gateway.upstream.client import UpstreamClient
 from app.modules.mcp_gateway.upstream.crud import UpstreamMcpCRUD, UpstreamToolCRUD
 
@@ -56,7 +55,7 @@ class _UpstreamCall:
     tools: list[Any]
     external_name: str
     arguments: dict[str, Any]
-    system_id: int
+    upstream_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +64,7 @@ class _CallFact:
     group_id: int
     tool_name: str
     system_id: int | None
+    upstream_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,17 +337,14 @@ class McpRuntime:
         upstream = await UpstreamMcpCRUD(auth, db).get(id=tool.upstream_id)
         if upstream is None:
             return None
-        system = await BizSystemCRUD(auth, db).get(id=upstream.system_id)
-        if system is None:
-            return None
         rows = await UpstreamToolCRUD(auth, db).get_list(search={"upstream_id": upstream.id})
         return _UpstreamCall(
             upstream=_snapshot(upstream),
-            system_code=system.code,
+            system_code=upstream.code,
             tools=[_snapshot(row) for row in rows],
             external_name=tool.external_name,
             arguments=arguments,
-            system_id=upstream.system_id,
+            upstream_id=upstream.id,
         )
 
     async def _call_fact(
@@ -362,34 +359,44 @@ class McpRuntime:
         if method != "tools/call":
             return None
         name = str(params.get("name") or "")
-        if isinstance(plan, _RestCall | _UpstreamCall):
-            system_id: int | None = plan.system_id
-        else:
-            system_id = await self._owner_system_id(db, group_id, name)
-        return _CallFact(user_id=user_id, group_id=group_id, tool_name=name, system_id=system_id)
+        if isinstance(plan, _RestCall):
+            return _CallFact(user_id=user_id, group_id=group_id, tool_name=name, system_id=plan.system_id)
+        if isinstance(plan, _UpstreamCall):
+            return _CallFact(
+                user_id=user_id,
+                group_id=group_id,
+                tool_name=name,
+                system_id=None,
+                upstream_id=plan.upstream_id,
+            )
+        system_id, upstream_id = await self._owner_ids(db, group_id, name)
+        return _CallFact(
+            user_id=user_id,
+            group_id=group_id,
+            tool_name=name,
+            system_id=system_id,
+            upstream_id=upstream_id,
+        )
 
-    async def _owner_system_id(self, db: Any, group_id: int, name: str) -> int | None:
+    async def _owner_ids(self, db: Any, group_id: int, name: str) -> tuple[int | None, int | None]:
         if not name:
-            return None
+            return None, None
         auth = AuthSchema()
         rows = await McpGroupToolCRUD(auth, db).get_list(search={"group_id": group_id, "external_name": name})
         if not rows:
-            return None
+            return None, None
         row = rows[0]
         if row.source == "rest":
             tool = await RestToolCRUD(auth, db).get(id=row.source_id)
             if tool is None:
-                return None
-            return tool.system_id
+                return None, None
+            return tool.system_id, None
         if row.source != "upstream":
-            return None
+            return None, None
         tool = await UpstreamToolCRUD(auth, db).get(id=row.source_id)
         if tool is None:
-            return None
-        upstream = await UpstreamMcpCRUD(auth, db).get(id=tool.upstream_id)
-        if upstream is None:
-            return None
-        return upstream.system_id
+            return None, None
+        return None, tool.upstream_id
 
     async def _record(
         self,
@@ -410,6 +417,7 @@ class McpRuntime:
             elapsed_ms,
             ok,
             http_status,
+            upstream_id=fact.upstream_id,
         )
 
     async def _perform(self, request: Request, plan: _RestCall | _UpstreamCall) -> _Performed:

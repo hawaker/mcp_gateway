@@ -16,7 +16,7 @@ from .schema import ToolSnapshot, UpstreamResult
 
 
 def external_name(code: str, remote_name: str) -> str:
-    """外部名称就是系统编码、下划线、远端工具名，按原样拼接。"""
+    """外部名称就是代理编码、下划线、远端工具名，按原样拼接。"""
     return f"{code}_{remote_name}"
 
 
@@ -83,7 +83,7 @@ class UpstreamClient:
 
     def _require_upstream(self, upstream_id: int) -> None:
         if self.upstream.id != upstream_id:
-            raise CustomException(msg="上游 MCP 不存在")
+            raise CustomException(msg="MCP 代理不存在")
 
     def _find(self, upstream_id: int, name: str) -> UpstreamToolModel | None:
         for tool in self.tools:

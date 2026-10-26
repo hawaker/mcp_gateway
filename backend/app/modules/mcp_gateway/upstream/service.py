@@ -1,4 +1,4 @@
-"""保存上游 MCP，并把 tools/list 的结果合并进本地工具表。"""
+"""保存 MCP 代理，并把 tools/list 的结果合并进本地工具表。"""
 
 from typing import Any
 
@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.base_schema import AuthSchema, PageResultSchema
 from app.core.exceptions import CustomException
-from app.modules.mcp_gateway.system.crud import BizSystemCRUD
 from app.utils.common_util import search_to_dict
 from app.utils.crypto_util import CryptoUtil
 
@@ -30,7 +29,8 @@ from .schema import (
 def upstream_create_payload(data: UpstreamMcpCreateSchema) -> dict[str, Any]:
     """明文凭证换成密文。返回值里不再保留 credential_value。"""
     return {
-        "system_id": data.system_id,
+        "name": data.name,
+        "code": data.code,
         "url": data.url,
         "credential_header": data.credential_header,
         "credential_value_encrypted": CryptoUtil.encrypt(data.credential_value),
@@ -38,10 +38,10 @@ def upstream_create_payload(data: UpstreamMcpCreateSchema) -> dict[str, Any]:
 
 
 def upstream_update_payload(data: UpstreamMcpUpdateSchema) -> dict[str, Any]:
-    """只收集提交过的字段。没有新凭证时不写密文列。"""
+    """只收集提交过的字段。没有新凭证时不写密文列。不能改 code。"""
     submitted = data.model_dump(exclude_unset=True)
     payload: dict[str, Any] = {}
-    for key in ("url", "credential_header"):
+    for key in ("name", "url", "credential_header"):
         if key in submitted and submitted[key] is not None:
             payload[key] = submitted[key]
     credential = submitted.get("credential_value")
@@ -51,7 +51,7 @@ def upstream_update_payload(data: UpstreamMcpUpdateSchema) -> dict[str, Any]:
 
 
 class UpstreamService:
-    """上游 MCP 与其工具的管理，以及一次不带业务 token 的调用。"""
+    """MCP 代理与其工具的管理，以及一次不带业务 token 的调用。"""
 
     def __init__(
         self,
@@ -81,17 +81,18 @@ class UpstreamService:
         )
 
     async def detail(self, upstream_id: int) -> UpstreamMcpOutSchema:
-        return await self._mcp_crud().get_or_404(id=upstream_id, msg="上游 MCP 不存在", out_schema=UpstreamMcpOutSchema)
+        return await self._mcp_crud().get_or_404(id=upstream_id, msg="MCP 代理不存在", out_schema=UpstreamMcpOutSchema)
 
     async def create(self, data: UpstreamMcpCreateSchema) -> UpstreamMcpOutSchema:
-        await self._require_system(data.system_id)
+        if await self._mcp_crud().exists(code=data.code):
+            raise CustomException(msg="英文编码已存在")
         obj = await self._mcp_crud().create(data=upstream_create_payload(data))
         return UpstreamMcpOutSchema.model_validate(obj)
 
     async def update(self, upstream_id: int, data: UpstreamMcpUpdateSchema) -> UpstreamMcpOutSchema:
         current = await self._mcp_crud().get(id=upstream_id)
         if current is None:
-            raise CustomException(msg="上游 MCP 不存在")
+            raise CustomException(msg="MCP 代理不存在")
         payload = upstream_update_payload(data)
         if not payload:
             return UpstreamMcpOutSchema.model_validate(current)
@@ -99,14 +100,14 @@ class UpstreamService:
         return UpstreamMcpOutSchema.model_validate(obj)
 
     async def delete(self, ids: list[int]) -> None:
-        """软删除上游 MCP，并同时软删除它名下的工具，之后 call 不会再看见这些工具。"""
+        """软删除 MCP 代理，并同时软删除它名下的工具，之后 call 不会再看见这些工具。"""
         if not ids:
             raise CustomException(msg="删除失败，删除对象不能为空")
         rows = await self._mcp_crud().get_list(search={"id": ("in", ids)})
         found = {row.id for row in rows}
         for upstream_id in ids:
             if upstream_id not in found:
-                raise CustomException(msg="上游 MCP 不存在")
+                raise CustomException(msg="MCP 代理不存在")
         tools = await self._tool_crud().get_list(search={"upstream_id": ("in", ids)})
         tool_ids = [tool.id for tool in tools if tool.id is not None]
         if tool_ids:
@@ -132,16 +133,16 @@ class UpstreamService:
     async def update_tool(self, tool_id: int, data: UpstreamToolUpdateSchema) -> UpstreamToolOutSchema:
         current = await self._tool_crud().get(id=tool_id)
         if current is None:
-            raise CustomException(msg="上游工具不存在")
+            raise CustomException(msg="代理工具不存在")
         obj = await self._tool_crud().update(id=tool_id, data=data)
         return UpstreamToolOutSchema.model_validate(obj)
 
     async def refresh(self, upstream_id: int) -> list[ToolSnapshot]:
-        """向该上游要一次工具列表。已有 remote_name 只更新 input_schema。"""
-        upstream, system_code, tools = await self._catalog(upstream_id)
+        """向该代理要一次工具列表。已有 remote_name 只更新 input_schema。"""
+        upstream, proxy_code, tools = await self._catalog(upstream_id)
         client = UpstreamClient(
             upstream=upstream,
-            system_code=system_code,
+            system_code=proxy_code,
             tools=tools,
             transport=self.transport,
         )
@@ -154,10 +155,10 @@ class UpstreamService:
 
     async def call(self, upstream_id: int, name: str, arguments: dict[str, Any] | None = None) -> UpstreamResult:
         """正式转发。未选用的工具不会发出请求。"""
-        upstream, system_code, tools = await self._catalog(upstream_id)
+        upstream, proxy_code, tools = await self._catalog(upstream_id)
         client = UpstreamClient(
             upstream=upstream,
-            system_code=system_code,
+            system_code=proxy_code,
             tools=tools,
             transport=self.transport,
         )
@@ -166,18 +167,10 @@ class UpstreamService:
     async def _catalog(self, upstream_id: int):
         upstream = await self._mcp_crud().get(id=upstream_id)
         if upstream is None:
-            raise CustomException(msg="上游 MCP 不存在")
-        system = await BizSystemCRUD(self.auth, self.db).get(id=upstream.system_id)
-        if system is None:
-            raise CustomException(msg="业务系统不存在")
+            raise CustomException(msg="MCP 代理不存在")
         rows = await self._tool_crud().get_list(search={"upstream_id": upstream_id}, order_by=[{"id": "asc"}])
         tools: list[UpstreamToolModel] = list(rows)
-        return upstream, system.code, tools
-
-    async def _require_system(self, system_id: int) -> None:
-        system = await BizSystemCRUD(self.auth, self.db).get(id=system_id)
-        if system is None:
-            raise CustomException(msg="业务系统不存在")
+        return upstream, upstream.code, tools
 
     def _mcp_crud(self) -> UpstreamMcpCRUD:
         return UpstreamMcpCRUD(self.auth, self.db)
