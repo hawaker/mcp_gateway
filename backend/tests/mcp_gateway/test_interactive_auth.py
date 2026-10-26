@@ -347,7 +347,7 @@ async def test_cached_interactive_token_is_used_without_a_new_link() -> None:
     await client.cache.put(
         1,
         10,
-        TokenBundle(access_token="kept", expires_at=datetime.now(UTC) + timedelta(minutes=5), token_type="Bearer"),
+        TokenBundle(vars={"access_token": "kept"}, expires_at=datetime.now(UTC) + timedelta(minutes=5)),
     )
 
     token = await client.ensure_token(1, 10, force=True)
@@ -356,7 +356,7 @@ async def test_cached_interactive_token_is_used_without_a_new_link() -> None:
         10,
         method="GET",
         url="https://oa.example.com/app/todos",
-        headers={"Authorization": "Bearer {{token}}"},
+        headers={"Authorization": "Bearer {{auth.access_token}}"},
     )
 
     assert token.access_token == "kept"
@@ -390,7 +390,7 @@ async def test_missing_interactive_cache_returns_a_link_and_does_not_login() -> 
     await client.cache.put(
         1,
         10,
-        TokenBundle(access_token="stale", expires_at=datetime.now(UTC) - timedelta(seconds=5), token_type="Bearer"),
+        TokenBundle(vars={"access_token": "stale"}, expires_at=datetime.now(UTC) - timedelta(seconds=5)),
     )
     with pytest.raises(InteractiveAuthRequired) as expired:
         await client.ensure_token(1, 10)
@@ -410,7 +410,7 @@ async def test_interactive_401_deletes_the_cache_and_does_not_force_login() -> N
     await client.cache.put(
         1,
         10,
-        TokenBundle(access_token="kept", expires_at=datetime.now(UTC) + timedelta(minutes=5), token_type="Bearer"),
+        TokenBundle(vars={"access_token": "kept"}, expires_at=datetime.now(UTC) + timedelta(minutes=5)),
     )
     force_flags: list[bool] = []
     original = client.ensure_token
@@ -427,7 +427,7 @@ async def test_interactive_401_deletes_the_cache_and_does_not_force_login() -> N
             10,
             method="GET",
             url="https://oa.example.com/app/todos",
-            headers={"Authorization": "Bearer {{token}}"},
+            headers={"Authorization": "Bearer {{auth.access_token}}"},
         )
 
     assert len(seen) == 1

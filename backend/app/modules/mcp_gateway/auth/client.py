@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from app.modules.mcp_gateway.auth.extract import TokenBundle, extract_token, resolve_url
+from app.modules.mcp_gateway.auth.extract import TokenBundle, extract_captures, extract_token, resolve_url
 from app.modules.mcp_gateway.auth.interactive import InteractiveAuth
 from app.modules.mcp_gateway.auth.migrate_rule import lift_custom_request_from_rule
 from app.modules.mcp_gateway.auth.model import AuthConfigModel
@@ -21,8 +21,10 @@ from app.modules.mcp_gateway.system.model import BizSystemModel
 from app.modules.mcp_gateway.token_cache.store import TokenCache
 from app.utils.crypto_util import CryptoUtil
 
-# 只认这四种。调用参数里的同名值不参与替换。
-_PLACEHOLDER = re.compile(r"\{\{(?:system\.(?P<system>[A-Za-z0-9_]+)|user\.uid|user\.attr\.(?P<attr>[A-Za-z0-9_]+)|token)\}\}")
+# system / user / auth。调用参数里的同名值不参与替换。不再识别 {{token}}。
+_PLACEHOLDER = re.compile(
+    r"\{\{(?:system\.(?P<system>[A-Za-z0-9_]+)|user\.uid|user\.attr\.(?P<attr>[A-Za-z0-9_]+)|auth\.(?P<auth>[A-Za-z0-9_]+))\}\}"
+)
 
 
 class CallerLiteral:
@@ -139,13 +141,13 @@ class AuthClient:
                 timeout=timeout,
             )
         self._require_sync(user_id, system_id)
-        token = await self.ensure_token(user_id, system_id)
-        response = await self._send_business(method, url, headers, params, json_body, form, token.access_token, timeout)
+        bundle = await self.ensure_token(user_id, system_id)
+        response = await self._send_business(method, url, headers, params, json_body, form, bundle.vars, timeout)
         if response.status_code != 401:
             return response
         await self.cache.delete(user_id, system_id)
-        token = await self.ensure_token(user_id, system_id, force=True)
-        return await self._send_business(method, url, headers, params, json_body, form, token.access_token, timeout)
+        bundle = await self.ensure_token(user_id, system_id, force=True)
+        return await self._send_business(method, url, headers, params, json_body, form, bundle.vars, timeout)
 
     async def _login_and_store(self, user_id: int, system_id: int, *, force: bool) -> TokenBundle:
         if not force:
@@ -190,7 +192,7 @@ class AuthClient:
         cached = await self._fresh(user_id, system_id)
         if cached is None:
             raise await self._link_required(user_id, system_id)
-        response = await self._send_business(method, url, headers, params, json_body, form, cached.access_token, timeout)
+        response = await self._send_business(method, url, headers, params, json_body, form, cached.vars, timeout)
         if response.status_code != 401:
             return response
         await self.cache.delete(user_id, system_id)
@@ -211,10 +213,13 @@ class AuthClient:
     async def _login(self) -> TokenBundle:
         method, url, kwargs = self._login_request()
         response = await self._request(method, url, **kwargs)
-        return extract_token(body=response.text, headers=dict(response.headers), rule=self.auth.rule or {})
+        rule = self.auth.rule or {}
+        if self.auth.method == "custom":
+            return extract_captures(body=response.text, headers=dict(response.headers), rule=rule)
+        return extract_token(body=response.text, headers=dict(response.headers), rule=rule)
 
     def _login_request(self) -> tuple[str, str, dict[str, Any]]:
-        url = resolve_url(self.system.base_url, self._render_text(self.auth.url, token=None))
+        url = resolve_url(self.system.base_url, self._render_text(self.auth.url, auth_vars=None))
         if self.auth.method == "fixed":
             binding = self._binding()
             return "POST", url, {"json": {self.system.uid_field: binding.uid_value}}
@@ -223,23 +228,23 @@ class AuthClient:
         if self.auth.method == "custom":
             headers, query, body_type, body = self._custom_request_shape()
             if headers:
-                kwargs["headers"] = self._render_mapping(headers, token=None)
+                kwargs["headers"] = self._render_mapping(headers, auth_vars=None)
             if query:
-                kwargs["params"] = self._render_mapping(query, token=None)
+                kwargs["params"] = self._render_mapping(query, auth_vars=None)
             if body_type == "form" and body is not None:
-                kwargs["data"] = self._render_mapping(body, token=None)
+                kwargs["data"] = self._render_mapping(body, auth_vars=None)
             elif body_type == "json" and body is not None:
-                kwargs["json"] = self._render_value(body, token=None)
+                kwargs["json"] = self._render_value(body, auth_vars=None)
         elif self.auth.method == "basic":
             query = self._section("query")
             json_body = self._section("json")
             form = self._section("form")
             if query is not None:
-                kwargs["params"] = self._render_mapping(query, token=None)
+                kwargs["params"] = self._render_mapping(query, auth_vars=None)
             if form is not None:
-                kwargs["data"] = self._render_mapping(form, token=None)
+                kwargs["data"] = self._render_mapping(form, auth_vars=None)
             elif json_body is not None:
-                kwargs["json"] = self._render_value(json_body, token=None)
+                kwargs["json"] = self._render_value(json_body, auth_vars=None)
             kwargs["auth"] = httpx.BasicAuth(
                 self.auth.username or "",
                 CryptoUtil.decrypt_or_keep(self.auth.password_encrypted),
@@ -270,20 +275,20 @@ class AuthClient:
         params: Mapping[str, Any] | None,
         json_body: Mapping[str, Any] | None,
         form: Mapping[str, Any] | None,
-        token: str,
+        auth_vars: Mapping[str, str],
         timeout: float | None = None,
     ) -> httpx.Response:
-        # URL、配置 header、token 槽位是模板。CallerLiteral 在渲染之后并入，原文上送。
-        target = resolve_url(self.system.base_url, self._render_text(url, token=token))
+        # URL、配置 header、auth 槽位是模板。CallerLiteral 在渲染之后并入，原文上送。
+        target = resolve_url(self.system.base_url, self._render_text(url, auth_vars=auth_vars))
         kwargs: dict[str, Any] = {}
         if headers is not None:
-            kwargs["headers"] = self._render_then_literals(headers, token=token, stringify=True)
+            kwargs["headers"] = self._render_then_literals(headers, auth_vars=auth_vars, stringify=True)
         if params is not None:
-            kwargs["params"] = self._render_then_literals(params, token=token, stringify=True)
+            kwargs["params"] = self._render_then_literals(params, auth_vars=auth_vars, stringify=True)
         if form is not None:
-            kwargs["data"] = self._render_then_literals(form, token=token, stringify=True)
+            kwargs["data"] = self._render_then_literals(form, auth_vars=auth_vars, stringify=True)
         elif json_body is not None:
-            kwargs["json"] = self._render_then_literals(json_body, token=token, stringify=False)
+            kwargs["json"] = self._render_then_literals(json_body, auth_vars=auth_vars, stringify=False)
         if timeout is not None:
             kwargs["timeout"] = timeout
         return await self._request(method, target, **kwargs)
@@ -306,7 +311,13 @@ class AuthClient:
             raise BindingUnavailable("没有可用的业务绑定")
         return self.binding
 
-    def _render_then_literals(self, value: Mapping[str, Any], *, token: str | None, stringify: bool) -> dict[str, Any]:
+    def _render_then_literals(
+        self,
+        value: Mapping[str, Any],
+        *,
+        auth_vars: Mapping[str, str] | None,
+        stringify: bool,
+    ) -> dict[str, Any]:
         templates: dict[str, Any] = {}
         literals: dict[str, Any] = {}
         for key, item in value.items():
@@ -316,9 +327,9 @@ class AuthClient:
             else:
                 templates[name] = item
         if stringify:
-            rendered: dict[str, Any] = self._render_mapping(templates, token=token)
+            rendered: dict[str, Any] = self._render_mapping(templates, auth_vars=auth_vars)
         else:
-            rendered_value = self._render_value(templates, token=token)
+            rendered_value = self._render_value(templates, auth_vars=auth_vars)
             rendered = rendered_value if isinstance(rendered_value, dict) else {}
         for name, item in literals.items():
             if name in rendered:
@@ -326,25 +337,25 @@ class AuthClient:
             rendered[name] = _as_text(item) if stringify else item
         return rendered
 
-    def _render_mapping(self, value: Mapping[str, Any], *, token: str | None) -> dict[str, str]:
-        rendered = self._render_value(dict(value), token=token)
+    def _render_mapping(self, value: Mapping[str, Any], *, auth_vars: Mapping[str, str] | None) -> dict[str, str]:
+        rendered = self._render_value(dict(value), auth_vars=auth_vars)
         return {str(key): _as_text(item) for key, item in rendered.items()}
 
-    def _render_value(self, value: Any, *, token: str | None) -> Any:
+    def _render_value(self, value: Any, *, auth_vars: Mapping[str, str] | None) -> Any:
         if isinstance(value, CallerLiteral):
             return value.value
         if isinstance(value, str):
-            return self._render_text(value, token=token)
+            return self._render_text(value, auth_vars=auth_vars)
         if isinstance(value, Mapping):
-            return {str(key): self._render_value(item, token=token) for key, item in value.items()}
+            return {str(key): self._render_value(item, auth_vars=auth_vars) for key, item in value.items()}
         if isinstance(value, list):
-            return [self._render_value(item, token=token) for item in value]
+            return [self._render_value(item, auth_vars=auth_vars) for item in value]
         return value
 
-    def _render_text(self, value: str, *, token: str | None) -> str:
-        return _PLACEHOLDER.sub(lambda match: self._replace(match, token), value)
+    def _render_text(self, value: str, *, auth_vars: Mapping[str, str] | None) -> str:
+        return _PLACEHOLDER.sub(lambda match: self._replace(match, auth_vars), value)
 
-    def _replace(self, match: re.Match[str], token: str | None) -> str:
+    def _replace(self, match: re.Match[str], auth_vars: Mapping[str, str] | None) -> str:
         system_key = match.group("system")
         if system_key is not None:
             params = self.system.params or {}
@@ -362,10 +373,11 @@ class AuthClient:
             if self.binding is None:
                 return match.group(0)
             return str(self.binding.uid_value)
-        if match.group(0) == "{{token}}":
-            if token is None:
+        auth_key = match.group("auth")
+        if auth_key is not None:
+            if auth_vars is None or auth_key not in auth_vars:
                 return match.group(0)
-            return token
+            return _as_text(auth_vars[auth_key])
         return match.group(0)
 
 

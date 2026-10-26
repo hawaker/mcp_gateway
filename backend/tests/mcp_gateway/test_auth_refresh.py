@@ -104,13 +104,13 @@ def _business_call() -> dict[str, Any]:
         "method": "GET",
         "url": "https://oa.example.com/app/todos",
         "headers": {
-            "Authorization": "Bearer {{token}}",
+            "Authorization": "Bearer {{auth.access_token}}",
             "X-Uid": "{{user.uid}}",
             "X-Dept": "{{user.attr.dept}}",
             "X-App": "{{system.client_id}}",
             "X-Secret": "{{user.attr.secret}}",
         },
-        "params": {"access_token": "{{token}}"},
+        "params": {"access_token": "{{auth.access_token}}"},
         "arguments": {
             "token": "from-caller",
             "uid": "from-caller",
@@ -264,7 +264,7 @@ _TEMPLATE = {
     "uid": "{{user.uid}}",
     "app": "{{system.client_id}}",
     "dept": "{{user.attr.dept}}",
-    "echo": "{{token}}",
+    "echo": "{{auth.access_token}}",
     "hidden": "{{user.attr.secret}}",
     "missing": "{{system.missing}}",
 }
@@ -272,7 +272,7 @@ _RENDERED = {
     "uid": "zhangsan",
     "app": "oa-app",
     "dept": "rd",
-    "echo": "{{token}}",
+    "echo": "{{auth.access_token}}",
     "hidden": "{{user.attr.secret}}",
     "missing": "{{system.missing}}",
 }
@@ -373,7 +373,7 @@ async def test_basic_login_uses_the_system_account_not_the_person() -> None:
     redis = ExpiringRedis()
     upstream = _Upstream(redis, [200])
     rule = dict(_TOKEN_RULE)
-    rule["json"] = {"uid": "{{user.uid}}", "echo": "{{token}}"}
+    rule["json"] = {"uid": "{{user.uid}}", "echo": "{{auth.access_token}}"}
     client, _cache = _client(
         httpx.MockTransport(upstream.handler),
         redis,
@@ -396,7 +396,7 @@ async def test_basic_login_uses_the_system_account_not_the_person() -> None:
     assert login.url.host == "oa.example.com"
     assert login.url.path == "/app/session"
     assert login.headers["authorization"] == "Basic " + b64encode(b"svc-account:svc-pass").decode()
-    assert json.loads(login.content) == {"uid": "zhangsan", "echo": "{{token}}"}
+    assert json.loads(login.content) == {"uid": "zhangsan", "echo": "{{auth.access_token}}"}
     assert "from-caller" not in login.content.decode()
     assert b"zhangsan:".decode() not in login.headers["authorization"]
     _assert_business_identity(upstream.business[0])
@@ -434,7 +434,7 @@ async def test_interactive_uses_a_cached_token_without_logging_in() -> None:
     await cache.put(
         USER_ID,
         SYSTEM_ID,
-        TokenBundle(access_token="kept", expires_at=datetime.now(UTC) + timedelta(minutes=5), token_type="Bearer"),
+        TokenBundle(vars={"access_token": "kept"}, expires_at=datetime.now(UTC) + timedelta(minutes=5)),
     )
 
     token = await client.ensure_token(USER_ID, SYSTEM_ID, force=True)
@@ -457,7 +457,7 @@ async def test_expired_cache_is_not_reused() -> None:
     await cache.put(
         USER_ID,
         SYSTEM_ID,
-        TokenBundle(access_token="stale", expires_at=datetime.now(UTC) - timedelta(seconds=30), token_type="Bearer"),
+        TokenBundle(vars={"access_token": "stale"}, expires_at=datetime.now(UTC) - timedelta(seconds=30)),
     )
 
     response = await client.call(USER_ID, SYSTEM_ID, **_business_call())
