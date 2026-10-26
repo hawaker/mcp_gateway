@@ -50,7 +50,7 @@
       :confirm-loading="submitLoading"
       @cancel="handleCloseDialog"
       @close="handleCloseDialog"
-      @confirm="handleSubmit()"
+      @confirm="onConfirm()"
     >
       <p class="auth-note">同一业务系统同时只启用一条鉴权。保存为启用时，该系统其余配置会改为未启用。</p>
       <PlaceholderHelp
@@ -73,6 +73,7 @@
         :gutter="16"
         :show-reset="false"
         :show-submit="false"
+        scroll-to-error
         class="crud-dialog-art-form"
       >
         <template #headers_rows>
@@ -124,6 +125,7 @@
 </template>
 
 <script setup lang="ts">
+import { ElMessage } from "element-plus";
 import BizAuthAPI, {
   recordToRows,
   rowsToRecord,
@@ -164,11 +166,6 @@ const METHOD_OPTIONS = [
 const HTTP_METHOD_OPTIONS = ["GET", "POST", "PUT", "PATCH", "DELETE"].map((value) => ({ label: value, value }));
 
 const RULE_PLACEHOLDER = `{
-  "token_from": "json",
-  "token_name": "access_token",
-  "expires_from": "json",
-  "expires_name": "expires_in",
-  "expires_unit": "seconds",
   "expires_seconds": 3600
 }`;
 
@@ -522,7 +519,12 @@ watch(
 function syncCapturesIntoRuleText() {
   if (formData.value.method !== "custom") return;
   const raw = (formData.value.rule_text ?? "").trim() || "{}";
-  const parsed = JSON.parse(raw) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("取值规则须为合法 JSON");
+  }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("取值规则须为 JSON 对象");
   }
@@ -530,12 +532,17 @@ function syncCapturesIntoRuleText() {
   const captures = captureRows.value
     .map((row) => ({
       name: row.name.trim(),
-      from: row.from.trim(),
+      from: (row.from || "json").trim(),
       path: row.path.trim(),
     }))
     .filter((row) => row.name);
   if (!captures.length) {
-    throw new Error("请至少配置一条捕获变量");
+    throw new Error("请至少配置一条捕获变量（填写变量名）");
+  }
+  for (const row of captures) {
+    if (row.from !== "text" && !row.path) {
+      throw new Error(`捕获变量「${row.name}」需要填写 path / 字段 / 正则`);
+    }
   }
   rule.captures = captures;
   delete rule.token_from;
@@ -559,7 +566,12 @@ function syncCustomRequestToForm() {
     return;
   }
   const raw = (formData.value.body_text ?? "").trim() || "{}";
-  const parsed = JSON.parse(raw) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Body 须为合法 JSON");
+  }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Body 须为 JSON 对象");
   }
@@ -760,12 +772,24 @@ async function openEdit(row: BizAuthTable) {
 }
 
 async function createAuthWithShape(form: BizAuthForm) {
-  syncCustomRequestToForm();
+  try {
+    syncCustomRequestToForm();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "表单内容无效";
+    ElMessage.error(message);
+    throw error;
+  }
   return BizAuthAPI.createAuth(form);
 }
 
 async function updateAuthWithShape(id: number, form: BizAuthForm) {
-  syncCustomRequestToForm();
+  try {
+    syncCustomRequestToForm();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "表单内容无效";
+    ElMessage.error(message);
+    throw error;
+  }
   return BizAuthAPI.updateAuth(id, form);
 }
 
@@ -791,6 +815,20 @@ const {
     await refreshUpdate();
   },
 });
+
+async function onConfirm() {
+  const form = formRef.value;
+  if (!form) {
+    ElMessage.warning("表单未就绪，请稍后再试");
+    return;
+  }
+  const valid = await (form.validate as () => Promise<boolean>)().catch(() => false);
+  if (!valid) {
+    ElMessage.warning("请完善表单：检查标红项（可能在对话框上方，如业务系统 / HTTP 方法）");
+    return;
+  }
+  await handleSubmit();
+}
 
 async function handleCloseDialog() {
   await closeCrudDialog();
