@@ -1,10 +1,10 @@
-"""管理员调试 MCP 组或上游。组走 build_mcp_app，上游用保存的凭证。"""
+"""管理员调试 MCP 组、上游或自定义地址。组走 build_mcp_app，上游用保存的凭证，自定义带 URL 与请求头。"""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -30,7 +30,7 @@ _TRANSPORTS = frozenset({"streamable_http", "sse"})
 
 
 class DebugTargetSchema(BaseModel):
-    """连接目标。组要带用户和传输；上游只带 upstream_id。"""
+    """连接目标。组要带用户和传输；上游只带 upstream_id；自定义要带 url 和传输。"""
 
     target: str = Field(description="group、upstream 或 custom")
     group_id: int | None = Field(default=None, description="MCP 组 ID")
@@ -59,7 +59,7 @@ class DebugTargetSchema(BaseModel):
             try:
                 require_http_url(self.url)
             except CustomException as exc:
-                raise ValueError(exc.msg) from exc
+                raise ValueError("地址必须以 http:// 或 https:// 开头") from exc
             if self.transport not in _TRANSPORTS:
                 raise ValueError("传输只能是 streamable_http 或 sse")
             return self
@@ -333,7 +333,8 @@ class DebugService:
                         _decode_bytes(body),
                         (),
                     )
-                event, endpoint = await _read_sse_event(stream)
+                reader = _HttpSseReader(stream)
+                event, endpoint = await reader.next_event()
                 if event != "endpoint" or not endpoint:
                     raise CustomException(msg="SSE 未返回 endpoint")
                 post_url = urljoin(url, endpoint)
@@ -349,7 +350,7 @@ class DebugService:
                 decoded = _decode_response(posted)
                 if isinstance(decoded, dict) and ("result" in decoded or "error" in decoded):
                     return _Exchange(posted.status_code, dict(post_headers), payload, decoded, ())
-                message_event, message = await _read_sse_event(stream)
+                message_event, message = await reader.next_event()
                 if message_event != "message":
                     raise CustomException(msg="SSE 未返回 message")
                 try:
@@ -578,21 +579,29 @@ def _decode_response(response: httpx.Response) -> Any:
         return response.text
 
 
-async def _read_sse_event(stream: httpx.Response) -> tuple[str, str]:
-    buffer = ""
-    async for chunk in stream.aiter_text():
-        buffer += chunk
-        while "\n\n" in buffer:
-            raw, buffer = buffer.split("\n\n", 1)
-            event = "message"
-            data: list[str] = []
-            for line in raw.split("\n"):
-                if line.startswith("event:"):
-                    event = line.split(":", 1)[1].strip()
-                elif line.startswith("data:"):
-                    data.append(line.split(":", 1)[1].lstrip())
-            return event, "\n".join(data)
-    raise CustomException(msg="SSE 流已关闭")
+class _HttpSseReader:
+    """按块读 httpx SSE，保留未消费缓冲供下次 next_event（对齐 _OpenSse）。"""
+
+    def __init__(self, stream: httpx.Response) -> None:
+        self._buffer = ""
+        self._aiter: AsyncIterator[str] = stream.aiter_text()
+
+    async def next_event(self) -> tuple[str, str]:
+        while "\n\n" not in self._buffer:
+            try:
+                chunk = await self._aiter.__anext__()
+            except StopAsyncIteration as exc:
+                raise CustomException(msg="SSE 流已关闭") from exc
+            self._buffer += chunk
+        raw, self._buffer = self._buffer.split("\n\n", 1)
+        event = "message"
+        data: list[str] = []
+        for line in raw.split("\n"):
+            if line.startswith("event:"):
+                event = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data.append(line.split(":", 1)[1].lstrip())
+        return event, "\n".join(data)
 
 
 def _decode_bytes(content: bytes) -> Any:

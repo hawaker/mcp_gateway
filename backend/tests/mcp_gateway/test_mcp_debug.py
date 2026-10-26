@@ -1,5 +1,6 @@
 """管理员 MCP 调试：走运行时同一入口，遮住 token，上游调试不写调用日志。"""
 
+import asyncio
 import json
 from typing import Any
 
@@ -437,12 +438,14 @@ def test_debug_target_schema_accepts_custom() -> None:
         DebugTargetSchema(target="custom", transport="streamable_http")
     with pytest.raises(ValidationError):
         DebugTargetSchema(target="custom", url="https://mcp.example.com/mcp")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as exc_info:
         DebugTargetSchema(
             target="custom",
             url="ftp://mcp.example.com/mcp",
             transport="streamable_http",
         )
+    assert "地址必须以 http:// 或 https:// 开头" in str(exc_info.value)
+    assert "上游地址" not in str(exc_info.value)
 
 
 async def test_custom_debug_streamable_without_call_log(db) -> None:
@@ -555,3 +558,92 @@ async def test_custom_debug_sse_initialize(db) -> None:
     assert session.server_info["name"] == "sse-custom"
     assert secret not in _blob(session.network)
     assert posts, "应向 endpoint POST initialize"
+
+
+async def test_http_sse_reader_keeps_leftover_buffer() -> None:
+    """同一块里 endpoint 之后的 message 不得被丢掉。"""
+    from app.modules.mcp_gateway.runtime.debug import _HttpSseReader
+
+    class _FakeStream:
+        def aiter_text(self):
+            async def gen():
+                yield (
+                    "event: endpoint\ndata: /messages\n\n"
+                    'event: message\ndata: {"ok":true}\n\n'
+                )
+
+            return gen()
+
+    reader = _HttpSseReader(_FakeStream())  # type: ignore[arg-type]
+    assert await reader.next_event() == ("endpoint", "/messages")
+    assert await reader.next_event() == ("message", '{"ok":true}')
+
+
+class _ChunkStream(httpx.AsyncByteStream):
+    def __init__(self, chunks) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self):
+        async for chunk in self._chunks:
+            yield chunk
+
+
+class _Path2SseTransport(httpx.AsyncBaseTransport):
+    """GET 先推 endpoint，等 POST 202 后再在同一 GET 流上推 message。"""
+
+    def __init__(self) -> None:
+        self._posted = asyncio.Event()
+        self._post_body: bytes | None = None
+        self.posts: list[str] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            assert str(request.url) == "https://sse.example.com/sse"
+
+            async def gen():
+                yield b"event: endpoint\ndata: /messages\n\n"
+                await self._posted.wait()
+                body = json.loads((self._post_body or b"{}").decode())
+                message = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": body.get("id"),
+                        "result": {
+                            "protocolVersion": "2025-03-26",
+                            "capabilities": {},
+                            "serverInfo": {"name": "sse-path2", "version": "0.1"},
+                        },
+                    },
+                    ensure_ascii=False,
+                ).encode()
+                yield b"event: message\ndata: " + message + b"\n\n"
+
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=_ChunkStream(gen()),
+            )
+
+        assert request.method == "POST"
+        assert str(request.url) == "https://sse.example.com/messages"
+        self._post_body = request.content
+        self.posts.append(request.content.decode())
+        self._posted.set()
+        return httpx.Response(202, content=b"")
+
+
+async def test_custom_debug_sse_path2_message_on_get_stream(db) -> None:
+    """path-2：POST 返回 202 空体，initialize 结果从仍打开的 GET SSE 流读取。"""
+    transport = _Path2SseTransport()
+    service = _service(db, ExpiringRedis(), transport)
+    session = await service.session(
+        target="custom",
+        url="https://sse.example.com/sse",
+        transport="sse",
+        headers={"X-Api-Key": "path2-secret"},
+    )
+    assert session.server_info["name"] == "sse-path2"
+    assert transport.posts
+    assert "initialize" in transport.posts[0]
+    assert "path2-secret" not in _blob(session.network)
+    assert await _rows(db) == []
