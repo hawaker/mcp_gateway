@@ -32,11 +32,13 @@ _TRANSPORTS = frozenset({"streamable_http", "sse"})
 class DebugTargetSchema(BaseModel):
     """连接目标。组要带用户和传输；上游只带 upstream_id。"""
 
-    target: str = Field(description="group 或 upstream")
+    target: str = Field(description="group、upstream 或 custom")
     group_id: int | None = Field(default=None, description="MCP 组 ID")
     user_id: int | None = Field(default=None, description="业务用户 ID")
     transport: str | None = Field(default=None, description="streamable_http 或 sse")
     upstream_id: int | None = Field(default=None, description="上游 MCP ID")
+    url: str | None = Field(default=None, description="自定义 MCP URL")
+    headers: dict[str, str] = Field(default_factory=dict, description="自定义请求头")
     reveal: bool = Field(default=False, description="为真时不遮住 token")
 
     @model_validator(mode="after")
@@ -51,7 +53,45 @@ class DebugTargetSchema(BaseModel):
             if self.upstream_id is None:
                 raise ValueError("调试上游需要 upstream_id")
             return self
-        raise ValueError("target 只能是 group 或 upstream")
+        if self.target == "custom":
+            if not self.url:
+                raise ValueError("调试自定义目标需要 url")
+            try:
+                require_http_url(self.url)
+            except CustomException as exc:
+                raise ValueError(exc.msg) from exc
+            if self.transport not in _TRANSPORTS:
+                raise ValueError("传输只能是 streamable_http 或 sse")
+            return self
+        raise ValueError("target 只能是 group、upstream 或 custom")
+
+
+_SECRET_HEADER_MARKERS = ("token", "secret", "key", "password")
+
+
+def _custom_header_secrets(headers: Mapping[str, str]) -> tuple[str, ...]:
+    secrets: list[str] = []
+    for name, value in headers.items():
+        if not value:
+            continue
+        lowered = name.lower()
+        if lowered == "authorization" or any(marker in lowered for marker in _SECRET_HEADER_MARKERS):
+            secrets.append(value)
+    return tuple(dict.fromkeys(secrets))
+
+
+def _merge_custom_headers(
+    user: Mapping[str, str],
+    *,
+    for_sse_get: bool = False,
+) -> dict[str, str]:
+    merged = {str(k): str(v) for k, v in user.items() if k}
+    if for_sse_get:
+        merged.setdefault("Accept", "text/event-stream")
+    else:
+        merged.setdefault("Content-Type", "application/json")
+        merged.setdefault("Accept", "application/json, text/event-stream")
+    return merged
 
 
 class DebugCallSchema(DebugTargetSchema):
@@ -121,6 +161,8 @@ class DebugService:
         user_id: int | None = None,
         transport: str | None = None,
         upstream_id: int | None = None,
+        url: str | None = None,
+        headers: Mapping[str, str] | None = None,
         reveal: bool = False,
     ) -> DebugSessionResultSchema:
         data = DebugTargetSchema(
@@ -129,6 +171,8 @@ class DebugService:
             user_id=user_id,
             transport=transport,
             upstream_id=upstream_id,
+            url=url,
+            headers=dict(headers or {}),
             reveal=reveal,
         )
         exchange = await self._rpc(
@@ -155,6 +199,8 @@ class DebugService:
         user_id: int | None = None,
         transport: str | None = None,
         upstream_id: int | None = None,
+        url: str | None = None,
+        headers: Mapping[str, str] | None = None,
         reveal: bool = False,
     ) -> DebugToolsListResultSchema:
         data = DebugTargetSchema(
@@ -163,6 +209,8 @@ class DebugService:
             user_id=user_id,
             transport=transport,
             upstream_id=upstream_id,
+            url=url,
+            headers=dict(headers or {}),
             reveal=reveal,
         )
         exchange = await self._rpc(data, "tools/list", {})
@@ -183,6 +231,8 @@ class DebugService:
         user_id: int | None = None,
         transport: str | None = None,
         upstream_id: int | None = None,
+        url: str | None = None,
+        headers: Mapping[str, str] | None = None,
         reveal: bool = False,
     ) -> DebugToolsCallResultSchema:
         data = DebugCallSchema(
@@ -191,6 +241,8 @@ class DebugService:
             user_id=user_id,
             transport=transport,
             upstream_id=upstream_id,
+            url=url,
+            headers=dict(headers or {}),
             reveal=reveal,
             name=name,
             arguments=dict(arguments or {}),
@@ -207,8 +259,65 @@ class DebugService:
         if data.target == "group":
             assert data.group_id is not None and data.user_id is not None and data.transport is not None
             return await self._group_rpc(data.group_id, data.user_id, data.transport, method, params)
-        assert data.upstream_id is not None
-        return await self._upstream_rpc(data.upstream_id, method, params)
+        if data.target == "upstream":
+            assert data.upstream_id is not None
+            return await self._upstream_rpc(data.upstream_id, method, params)
+        assert data.url is not None and data.transport is not None
+        return await self._custom_rpc(data.url, data.headers, data.transport, method, params)
+
+    async def _custom_rpc(
+        self,
+        url: str,
+        headers: Mapping[str, str],
+        transport: str,
+        method: str,
+        params: dict[str, Any],
+    ) -> _Exchange:
+        target_url = require_http_url(url)
+        payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+        if transport == "streamable_http":
+            exchange = await self._custom_streamable(target_url, headers, payload)
+        elif transport == "sse":
+            exchange = await self._custom_sse(target_url, headers, payload)
+        else:
+            raise CustomException(msg="传输只能是 streamable_http 或 sse")
+        secrets = _custom_header_secrets(headers)
+        return _Exchange(
+            status=exchange.status,
+            request_headers=exchange.request_headers,
+            request_body=exchange.request_body,
+            response_body=exchange.response_body,
+            secrets=secrets,
+        )
+
+    async def _custom_streamable(
+        self,
+        url: str,
+        headers: Mapping[str, str],
+        payload: dict[str, Any],
+    ) -> _Exchange:
+        sent = _merge_custom_headers(headers)
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        client = httpx.AsyncClient(transport=_borrow(self.transport), timeout=30.0)
+        try:
+            response = await client.post(url, content=body, headers=sent)
+            return _Exchange(
+                status=response.status_code,
+                request_headers=dict(sent),
+                request_body=payload,
+                response_body=_decode_response(response),
+                secrets=(),
+            )
+        finally:
+            await client.aclose()
+
+    async def _custom_sse(
+        self,
+        url: str,
+        headers: Mapping[str, str],
+        payload: dict[str, Any],
+    ) -> _Exchange:
+        raise CustomException(msg="自定义 SSE 尚未实现")  # Task 2 替换
 
     async def _group_rpc(
         self,

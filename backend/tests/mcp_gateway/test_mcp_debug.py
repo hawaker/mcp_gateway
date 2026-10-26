@@ -418,3 +418,94 @@ async def test_group_debug_connect_requires_existing_credential(db) -> None:
         )
     ).scalars().all()
     assert after == []
+
+
+def test_debug_target_schema_accepts_custom() -> None:
+    from app.modules.mcp_gateway.runtime.debug import DebugTargetSchema
+    from pydantic import ValidationError
+
+    ok = DebugTargetSchema(
+        target="custom",
+        url="https://mcp.example.com/mcp",
+        transport="streamable_http",
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    assert ok.url == "https://mcp.example.com/mcp"
+    assert ok.headers["Authorization"] == "Bearer secret-token"
+
+    with pytest.raises(ValidationError):
+        DebugTargetSchema(target="custom", transport="streamable_http")
+    with pytest.raises(ValidationError):
+        DebugTargetSchema(target="custom", url="https://mcp.example.com/mcp")
+    with pytest.raises(ValidationError):
+        DebugTargetSchema(
+            target="custom",
+            url="ftp://mcp.example.com/mcp",
+            transport="streamable_http",
+        )
+
+
+async def test_custom_debug_streamable_without_call_log(db) -> None:
+    secret = "Bearer custom-debug-secret"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://custom.example.com/mcp"
+        assert request.headers.get("authorization") == secret
+        body = json.loads(request.content.decode())
+        method = body.get("method")
+        if method == "initialize":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body.get("id"),
+                    "result": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "custom-mcp", "version": "1.0"},
+                    },
+                },
+            )
+        if method == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body.get("id"),
+                    "result": {"tools": [{"name": "ping", "inputSchema": {"type": "object"}}]},
+                },
+            )
+        if method == "tools/call":
+            assert body["params"]["name"] == "ping"
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body.get("id"),
+                    "result": {"content": [{"type": "text", "text": "pong"}]},
+                },
+            )
+        return httpx.Response(500, text=f"unexpected {method}")
+
+    service = _service(db, ExpiringRedis(), httpx.MockTransport(handler))
+    common = dict(
+        target="custom",
+        url="https://custom.example.com/mcp",
+        transport="streamable_http",
+        headers={"Authorization": secret},
+    )
+
+    session = await service.session(**common)
+    assert session.server_info["name"] == "custom-mcp"
+    assert "custom-debug-secret" not in _blob(session.network)
+    assert _MASK in _blob(session.network)
+
+    listed = await service.tools_list(**common)
+    assert [item["name"] for item in listed.tools] == ["ping"]
+
+    called = await service.tools_call(**common, name="ping", arguments={})
+    assert called.result_text == "pong"
+    assert await _rows(db) == []
+
+    revealed = await service.session(**common, reveal=True)
+    assert "custom-debug-secret" in _blob(revealed.network)

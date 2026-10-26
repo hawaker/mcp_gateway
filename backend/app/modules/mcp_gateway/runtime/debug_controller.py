@@ -41,6 +41,8 @@ async def debug_session_controller(
         user_id=data.user_id,
         transport=data.transport,
         upstream_id=data.upstream_id,
+        url=data.url,
+        headers=data.headers,
         reveal=data.reveal,
     )
     return SuccessResponse(data=result, msg="连接调试目标成功")
@@ -63,6 +65,8 @@ async def debug_tools_list_controller(
         user_id=data.user_id,
         transport=data.transport,
         upstream_id=data.upstream_id,
+        url=data.url,
+        headers=data.headers,
         reveal=data.reveal,
     )
     return SuccessResponse(data=result, msg="列出调试工具成功")
@@ -85,6 +89,8 @@ async def debug_tools_call_controller(
         user_id=data.user_id,
         transport=data.transport,
         upstream_id=data.upstream_id,
+        url=data.url,
+        headers=data.headers,
         reveal=data.reveal,
         name=data.name,
         arguments=data.arguments,
