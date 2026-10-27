@@ -12,7 +12,13 @@ from app.utils.crypto_util import CryptoUtil
 
 from .crud import GenbiDatasourceCRUD
 from .model import GenbiDatasourceModel
-from .schema import GenbiDatasourceOut, GenbiDatasourceQueryParam, GenbiDatasourceUpdate
+from .probe import probe_connection
+from .schema import (
+    GenbiDatasourceOut,
+    GenbiDatasourceQueryParam,
+    GenbiDatasourceTest,
+    GenbiDatasourceUpdate,
+)
 from .types import WREN_TYPES
 
 _SECRET_FIELDS = ("password", "api_key", "private_key", "token")
@@ -117,6 +123,41 @@ class GenbiDatasourceService:
             if datasource_id not in found:
                 raise CustomException(msg="数据源不存在")
         await crud.delete(ids=ids)
+
+    async def test_connection(self, data: GenbiDatasourceTest | dict[str, Any]) -> None:
+        """按明文表单参数测连（不落库）。成功静默；失败 CustomException。"""
+        params = data.model_dump() if isinstance(data, GenbiDatasourceTest) else dict(data)
+        params["wren_type"] = self._normalize_wren_type(str(params.get("wren_type") or ""))
+        await probe_connection(params)
+
+    async def test_by_id(self, datasource_id: int) -> None:
+        """对已保存数据源解密密钥后测连。"""
+        row = await GenbiDatasourceCRUD(self.auth, self.db).get(id=datasource_id)
+        if row is None:
+            raise CustomException(msg="数据源不存在")
+        await probe_connection(self._row_to_probe_params(row))
+
+    @staticmethod
+    def _row_to_probe_params(row: GenbiDatasourceModel) -> dict[str, Any]:
+        def _dec(cipher: str | None) -> str | None:
+            if not cipher:
+                return None
+            return CryptoUtil.decrypt(cipher)
+
+        return {
+            "wren_type": row.wren_type,
+            "host": row.host,
+            "port": row.port,
+            "username": row.username,
+            "password": _dec(row.password_encrypted),
+            "database": row.database,
+            "db_schema": row.db_schema,
+            "url": row.url,
+            "api_key": _dec(row.api_key_encrypted),
+            "private_key": _dec(row.private_key_encrypted),
+            "token": _dec(row.token_encrypted),
+            "config": row.config if isinstance(row.config, dict) else {},
+        }
 
     @staticmethod
     def _normalize_wren_type(wren_type: str) -> str:

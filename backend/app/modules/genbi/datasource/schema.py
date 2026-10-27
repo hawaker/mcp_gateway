@@ -108,3 +108,30 @@ class GenbiDatasourceQueryParam(BaseQueryParam):
     name: str | None = Field(None, description="名称", json_schema_extra={"q": "like"})
     wren_type: str | None = Field(None, description="Wren 类型", json_schema_extra={"q": "eq"})
     enabled: bool | None = Field(None, description="是否启用", json_schema_extra={"q": "eq"})
+
+
+class GenbiDatasourceTest(BaseModel):
+    """未保存表单测连。明文密钥仅用于探测，不落库。"""
+
+    wren_type: str = Field(..., min_length=1, max_length=32, description="Wren 数据源类型")
+    host: str | None = Field(default=None, max_length=255, description="主机")
+    port: int | None = Field(default=None, ge=0, le=65535, description="端口")
+    username: str | None = Field(default=None, max_length=128, description="用户名")
+    password: str | None = Field(default=None, max_length=2048, description="密码")
+    database: str | None = Field(default=None, max_length=128, description="数据库名")
+    db_schema: str | None = Field(default=None, max_length=128, description="Schema")
+    url: str | None = Field(default=None, max_length=1024, description="连接 URL")
+    api_key: str | None = Field(default=None, max_length=4096, description="API Key")
+    private_key: str | None = Field(default=None, max_length=16384, description="私钥")
+    token: str | None = Field(default=None, max_length=4096, description="Token")
+    config: dict[str, Any] = Field(default_factory=dict, description="扩展配置")
+
+    @field_validator("wren_type")
+    @classmethod
+    def _validate_wren_type(cls, value: str) -> str:
+        return _strip_required(value, "数据源类型")
+
+    @field_validator("host", "username", "database", "db_schema", "url")
+    @classmethod
+    def _validate_optional(cls, value: str | None) -> str | None:
+        return _optional_str(value)
