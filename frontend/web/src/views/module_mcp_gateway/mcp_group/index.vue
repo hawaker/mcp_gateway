@@ -192,6 +192,147 @@
     </FaDialog>
 
     <FaDialog
+      v-model="datasourceDialogVisible"
+      title="组内数据源"
+      width="920px"
+      dialog-class="crud-embed-dialog"
+      modal-class="crud-embed-dialog"
+      form-mode="detail"
+      confirm-text="关闭"
+      @close="datasourceDialogVisible = false"
+    >
+      <div class="mcp-group-panel">
+        <div class="mcp-group-panel__bar">
+          <span>{{ activeGroupLabel }}</span>
+          <ElButton
+            v-hasPerm="['module_mcp_gateway:mcp-group:create']"
+            type="primary"
+            plain
+            @click="openAttachDatasource"
+          >
+            关联数据源
+          </ElButton>
+        </div>
+        <p class="mcp-group-panel__hint">组内调用者共用每源 ACL（行列规则）。停用后 ask_bi 不再暴露该源。</p>
+        <FaTable
+          :loading="dsLoading"
+          :data="dsData"
+          :columns="dsColumns"
+          :pagination="dsPagination"
+          @pagination:size-change="handleDsSizeChange"
+          @pagination:current-change="handleDsCurrentChange"
+        />
+      </div>
+    </FaDialog>
+
+    <FaDialog
+      v-model="dsFormVisible"
+      title="关联数据源"
+      width="560px"
+      dialog-class="crud-embed-dialog"
+      modal-class="crud-embed-dialog"
+      form-mode="create"
+      :confirm-loading="dsSubmitLoading"
+      @cancel="dsFormVisible = false"
+      @close="dsFormVisible = false"
+      @confirm="submitAttachDatasource"
+    >
+      <FaForm
+        ref="dsFormRef"
+        v-model="dsForm"
+        :items="dsFormItems"
+        :rules="dsRules"
+        label-suffix=":"
+        :label-width="110"
+        label-position="right"
+        :span="24"
+        :gutter="16"
+        :show-reset="false"
+        :show-submit="false"
+        class="crud-dialog-art-form"
+      />
+    </FaDialog>
+
+    <FaDialog
+      v-model="aclDialogVisible"
+      title="编辑 ACL"
+      width="900px"
+      dialog-class="crud-embed-dialog"
+      modal-class="crud-embed-dialog"
+      form-mode="create"
+      :confirm-loading="aclSaving"
+      confirm-text="保存 ACL"
+      @cancel="aclDialogVisible = false"
+      @close="aclDialogVisible = false"
+      @confirm="saveAcl"
+    >
+      <div class="mcp-group-panel genbi-acl-panel">
+        <p class="mcp-group-panel__hint">
+          组 × 源共享规则。行规则过滤；列规则 mask/deny。model_id / column_id 来自该数据源项目的 MDL。
+        </p>
+        <div class="genbi-acl-section">
+          <div class="mcp-group-panel__bar">
+            <strong>行规则</strong>
+            <ElButton type="primary" plain size="small" @click="addRowPolicy">添加</ElButton>
+          </div>
+          <div v-for="(row, index) in aclRowPolicies" :key="`row-${index}`" class="genbi-acl-row">
+            <ElSelect v-model="row.model_id" placeholder="模型" filterable style="width: 160px" @change="() => onAclModelChange(row)">
+              <ElOption v-for="m in aclModels" :key="m.id" :label="m.display_name || m.reference_name" :value="m.id!" />
+            </ElSelect>
+            <ElSelect v-model="row.column_id" placeholder="列" filterable style="width: 140px">
+              <ElOption
+                v-for="c in columnsForModel(row.model_id)"
+                :key="c.id"
+                :label="c.display_name || c.source_column_name"
+                :value="c.id!"
+              />
+            </ElSelect>
+            <ElSelect v-model="row.operator" placeholder="运算符" style="width: 120px">
+              <ElOption v-for="op in ACL_OPERATORS" :key="op" :label="op" :value="op" />
+            </ElSelect>
+            <ElInput v-model="row.valuesText" placeholder="值，逗号分隔" style="flex: 1" />
+            <ElButton type="danger" link @click="aclRowPolicies.splice(index, 1)">删除</ElButton>
+          </div>
+        </div>
+        <div class="genbi-acl-section">
+          <div class="mcp-group-panel__bar">
+            <strong>列规则</strong>
+            <ElButton type="primary" plain size="small" @click="addColumnPolicy">添加</ElButton>
+          </div>
+          <div v-for="(col, index) in aclColumnPolicies" :key="`col-${index}`" class="genbi-acl-row">
+            <ElSelect v-model="col.model_id" placeholder="模型" filterable style="width: 160px" @change="() => onAclModelChange(col)">
+              <ElOption v-for="m in aclModels" :key="m.id" :label="m.display_name || m.reference_name" :value="m.id!" />
+            </ElSelect>
+            <ElSelect v-model="col.column_id" placeholder="列" filterable style="width: 140px">
+              <ElOption
+                v-for="c in columnsForModel(col.model_id)"
+                :key="c.id"
+                :label="c.display_name || c.source_column_name"
+                :value="c.id!"
+              />
+            </ElSelect>
+            <ElSelect v-model="col.action" placeholder="动作" style="width: 110px">
+              <ElOption label="mask" value="mask" />
+              <ElOption label="deny" value="deny" />
+            </ElSelect>
+            <ElSelect
+              v-model="col.mask_template"
+              placeholder="掩码模板"
+              clearable
+              :disabled="col.action !== 'mask'"
+              style="width: 140px"
+            >
+              <ElOption label="all_stars" value="all_stars" />
+              <ElOption label="keep_first_1" value="keep_first_1" />
+              <ElOption label="keep_first_3" value="keep_first_3" />
+            </ElSelect>
+            <ElButton type="danger" link @click="aclColumnPolicies.splice(index, 1)">删除</ElButton>
+          </div>
+        </div>
+      </div>
+    </FaDialog>
+
+    <FaDialog
       v-model="connectionDialogVisible"
       title="连接信息"
       width="760px"
@@ -229,6 +370,15 @@
 
 <script setup lang="ts">
 import { ElMessage } from "element-plus";
+import GenbiDatasourceAPI, { type GenbiDatasourceTable } from "@/api/module_genbi/datasource";
+import GenbiGroupDatasourceAPI, {
+  type GenbiAclColumnAction,
+  type GenbiAclMaskTemplate,
+  type GenbiAclOperator,
+  type GenbiGroupDatasourceAttachForm,
+  type GenbiGroupDatasourceTable,
+} from "@/api/module_genbi/group_datasource";
+import GenbiProjectAPI, { type GenbiModelTable } from "@/api/module_genbi/project";
 import McpGroupAPI, {
   type McpConnectionInfo,
   type McpCredentialTable,
@@ -311,6 +461,15 @@ function rowActions(row: McpGroupTable): TableOperationAction[] {
       run: () => void openTools(row),
     },
     {
+      key: "datasources",
+      label: "数据源",
+      artType: "view",
+      icon: "ri:database-2-line",
+      iconColor: "var(--el-color-success)",
+      perm: "module_mcp_gateway:mcp-group:query",
+      run: () => void openDatasources(row),
+    },
+    {
       key: "members",
       label: "成员",
       artType: "view",
@@ -362,7 +521,7 @@ const {
       {
         prop: "operation",
         label: "操作",
-        width: 240,
+        width: 300,
         fixed: "right",
         align: "center",
         formatter: (row: McpGroupTable) =>
@@ -745,6 +904,300 @@ async function toggleMember(row: McpGroupMemberTable) {
   await getMemberData();
 }
 
+const ACL_OPERATORS: GenbiAclOperator[] = [
+  "eq",
+  "ne",
+  "gt",
+  "gte",
+  "lt",
+  "lte",
+  "in",
+  "not_in",
+  "contains",
+  "not_contains",
+];
+
+interface AclRowDraft {
+  model_id?: number;
+  column_id?: number;
+  operator: GenbiAclOperator;
+  valuesText: string;
+}
+
+interface AclColumnDraft {
+  model_id?: number;
+  column_id?: number;
+  action: GenbiAclColumnAction;
+  mask_template?: GenbiAclMaskTemplate | null;
+}
+
+const genbiDatasources = ref<GenbiDatasourceTable[]>([]);
+const genbiDatasourceOptions = computed(() =>
+  genbiDatasources.value
+    .filter((item) => item.id)
+    .map((item) => ({ label: `${item.name} (#${item.id})`, value: item.id })),
+);
+
+async function loadGenbiDatasources() {
+  const response = await GenbiDatasourceAPI.listDatasource({ page_no: 1, page_size: 200, enabled: true });
+  genbiDatasources.value = response.data.data?.items ?? [];
+}
+
+function genbiDatasourceLabel(id?: number) {
+  const row = genbiDatasources.value.find((item) => item.id === id);
+  return row?.name || (id ? String(id) : "");
+}
+
+const datasourceDialogVisible = ref(false);
+const dsFormVisible = ref(false);
+const dsSubmitLoading = ref(false);
+const dsFormRef = ref<InstanceType<typeof FaForm> | null>(null);
+const dsForm = ref<GenbiGroupDatasourceAttachForm>({
+  datasource_id: undefined,
+  external_name: "",
+  enabled: true,
+});
+
+function dsActions(row: GenbiGroupDatasourceTable): TableOperationAction[] {
+  return [
+    {
+      key: "acl",
+      label: "ACL",
+      artType: "edit",
+      perm: "module_mcp_gateway:mcp-group:update",
+      run: () => void openAcl(row),
+    },
+    {
+      key: row.enabled === false ? "enable" : "disable",
+      label: row.enabled === false ? "启用" : "停用",
+      artType: "edit",
+      perm: "module_mcp_gateway:mcp-group:update",
+      run: () => void toggleDatasource(row),
+    },
+  ];
+}
+
+const {
+  columns: dsColumns,
+  data: dsData,
+  loading: dsLoading,
+  pagination: dsPagination,
+  replaceSearchParams: replaceDsSearch,
+  getData: getDsData,
+  handleSizeChange: handleDsSizeChange,
+  handleCurrentChange: handleDsCurrentChange,
+} = useTable({
+  core: {
+    apiFn: GenbiGroupDatasourceAPI.list,
+    apiParams: { page_no: 1, page_size: 10, group_id: undefined },
+    immediate: false,
+    columnsFactory: () => [
+      { type: "globalIndex", width: 56, label: "序号" },
+      {
+        prop: "datasource_id",
+        label: "数据源",
+        minWidth: 160,
+        showOverflowTooltip: true,
+        formatter: (row: GenbiGroupDatasourceTable) => genbiDatasourceLabel(row.datasource_id),
+      },
+      { prop: "external_name", label: "外部名称", minWidth: 180, showOverflowTooltip: true },
+      {
+        prop: "enabled",
+        label: "启用",
+        width: 88,
+        formatter: (row: GenbiGroupDatasourceTable) => enabledText(row.enabled),
+      },
+      {
+        prop: "operation",
+        label: "操作",
+        width: 140,
+        fixed: "right",
+        align: "center",
+        formatter: (row: GenbiGroupDatasourceTable) =>
+          renderTableOperationCell(dsActions(row), {
+            wrapperClass: "inline-flex flex-wrap items-center justify-end gap-1 align-middle",
+          }),
+      },
+    ],
+  },
+});
+
+const dsFormItems = computed<FormItem[]>(() => [
+  {
+    label: "数据源",
+    key: "datasource_id",
+    type: "select",
+    span: 24,
+    props: { placeholder: "请选择数据源", options: genbiDatasourceOptions.value, filterable: true },
+  },
+  {
+    label: "外部名称",
+    key: "external_name",
+    type: "input",
+    span: 24,
+    props: { placeholder: "留空则用 {system.code}_ask_bi", maxlength: 512 },
+  },
+  { label: "启用", key: "enabled", type: "switch", span: 24 },
+]);
+
+const dsRules = reactive({
+  datasource_id: [{ required: true, message: "请选择数据源", trigger: "change" }],
+});
+
+async function openDatasources(row: McpGroupTable) {
+  if (!row.id) return;
+  activeGroup.value = row;
+  datasourceDialogVisible.value = true;
+  await loadGenbiDatasources();
+  replaceDsSearch({ group_id: row.id });
+  await getDsData();
+}
+
+async function openAttachDatasource() {
+  await loadGenbiDatasources();
+  dsForm.value = { datasource_id: undefined, external_name: "", enabled: true };
+  dsFormVisible.value = true;
+}
+
+async function submitAttachDatasource() {
+  const groupId = activeGroup.value?.id;
+  if (!groupId) return;
+  const valid = await dsFormRef.value?.validate().catch(() => false);
+  if (!valid) return;
+  dsSubmitLoading.value = true;
+  try {
+    await GenbiGroupDatasourceAPI.attach(groupId, dsForm.value);
+    dsFormVisible.value = false;
+    ElMessage.success("已关联数据源");
+    await getDsData();
+  } finally {
+    dsSubmitLoading.value = false;
+  }
+}
+
+async function toggleDatasource(row: GenbiGroupDatasourceTable) {
+  if (!row.id) return;
+  await GenbiGroupDatasourceAPI.update(row.id, { enabled: row.enabled === false });
+  await getDsData();
+}
+
+const aclDialogVisible = ref(false);
+const aclSaving = ref(false);
+const aclLink = ref<GenbiGroupDatasourceTable>();
+const aclModels = ref<GenbiModelTable[]>([]);
+const aclRowPolicies = ref<AclRowDraft[]>([]);
+const aclColumnPolicies = ref<AclColumnDraft[]>([]);
+
+function columnsForModel(modelId?: number) {
+  const model = aclModels.value.find((item) => item.id === modelId);
+  return model?.columns ?? [];
+}
+
+function onAclModelChange(draft: { model_id?: number; column_id?: number }) {
+  draft.column_id = undefined;
+}
+
+function addRowPolicy() {
+  aclRowPolicies.value.push({
+    model_id: undefined,
+    column_id: undefined,
+    operator: "eq",
+    valuesText: "",
+  });
+}
+
+function addColumnPolicy() {
+  aclColumnPolicies.value.push({
+    model_id: undefined,
+    column_id: undefined,
+    action: "mask",
+    mask_template: "all_stars",
+  });
+}
+
+async function loadAclModels(datasourceId?: number) {
+  aclModels.value = [];
+  if (!datasourceId) return;
+  const projectResponse = await GenbiProjectAPI.listProject({
+    page_no: 1,
+    page_size: 1,
+    datasource_id: datasourceId,
+  });
+  const project = projectResponse.data.data?.items?.[0];
+  if (!project?.id) return;
+  const modelsResponse = await GenbiProjectAPI.listModels(project.id);
+  aclModels.value = modelsResponse.data.data ?? [];
+}
+
+async function openAcl(row: GenbiGroupDatasourceTable) {
+  if (!row.id) return;
+  aclLink.value = row;
+  await loadGenbiDatasources();
+  await loadAclModels(row.datasource_id);
+  const response = await GenbiGroupDatasourceAPI.getAcl(row.id);
+  const acl = response.data.data;
+  aclRowPolicies.value = (acl?.row_policies ?? []).map((item) => ({
+    model_id: item.model_id,
+    column_id: item.column_id,
+    operator: item.operator,
+    valuesText: (item.values ?? []).join(","),
+  }));
+  aclColumnPolicies.value = (acl?.column_policies ?? []).map((item) => ({
+    model_id: item.model_id,
+    column_id: item.column_id,
+    action: item.action,
+    mask_template: item.mask_template ?? null,
+  }));
+  aclDialogVisible.value = true;
+}
+
+async function saveAcl() {
+  const linkId = aclLink.value?.id;
+  if (!linkId) return;
+  for (const row of aclRowPolicies.value) {
+    if (!row.model_id || !row.column_id) {
+      ElMessage.error("行规则须选择模型与列");
+      return;
+    }
+  }
+  for (const col of aclColumnPolicies.value) {
+    if (!col.model_id || !col.column_id) {
+      ElMessage.error("列规则须选择模型与列");
+      return;
+    }
+    if (col.action === "mask" && !col.mask_template) {
+      ElMessage.error("mask 规则须选择掩码模板");
+      return;
+    }
+  }
+  aclSaving.value = true;
+  try {
+    await GenbiGroupDatasourceAPI.saveAcl(linkId, {
+      row_policies: aclRowPolicies.value.map((row) => ({
+        model_id: row.model_id!,
+        column_id: row.column_id!,
+        operator: row.operator,
+        values: row.valuesText
+          .split(/[,，]/)
+          .map((part) => part.trim())
+          .filter(Boolean),
+        propagate: false,
+        propagate_to_model_ids: [],
+      })),
+      column_policies: aclColumnPolicies.value.map((col) => ({
+        model_id: col.model_id!,
+        column_id: col.column_id!,
+        action: col.action,
+        mask_template: col.action === "mask" ? col.mask_template ?? null : null,
+      })),
+    });
+    aclDialogVisible.value = false;
+    ElMessage.success("已保存 ACL");
+  } finally {
+    aclSaving.value = false;
+  }
+}
+
 const connectionDialogVisible = ref(false);
 const connectionInfo = ref<McpConnectionInfo | null>(null);
 const connectionTab = ref<"streamable-http" | "sse">("streamable-http");
@@ -938,5 +1391,17 @@ async function renewConnection(row: McpCredentialTable) {
   line-height: 1.55;
   white-space: pre;
   word-break: break-all;
+}
+
+.genbi-acl-section {
+  margin-bottom: 16px;
+}
+
+.genbi-acl-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
 }
 </style>
