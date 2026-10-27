@@ -375,6 +375,13 @@ class McpGroupService:
             if exclude_id is not None and row.id == exclude_id:
                 continue
             raise CustomException(msg="外部名称已存在")
+        from app.modules.genbi.acl.crud import GenbiGroupDatasourceCRUD
+
+        ds_rows = await GenbiGroupDatasourceCRUD(self.auth, self.db).get_list(
+            search={"group_id": group_id, "external_name": external_name},
+        )
+        if ds_rows:
+            raise CustomException(msg="外部名称已存在")
 
     async def _publish(self, source: str, source_id: int, external_name: str) -> PublishedToolSchema | None:
         if source == "rest":

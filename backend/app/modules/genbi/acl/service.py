@@ -212,3 +212,10 @@ class GenbiGroupDatasourceService:
             if exclude_id is not None and row.id == exclude_id:
                 continue
             raise CustomException(msg="外部名称已存在")
+        from app.modules.mcp_gateway.mcp_group.crud import McpGroupToolCRUD
+
+        tool_rows = await McpGroupToolCRUD(self.auth, self.db).get_list(
+            search={"group_id": group_id, "external_name": external_name},
+        )
+        if tool_rows:
+            raise CustomException(msg="外部名称已存在")

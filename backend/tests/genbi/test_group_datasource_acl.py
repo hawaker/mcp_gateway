@@ -221,3 +221,66 @@ async def test_group_selection_requires_rest_or_upstream_or_datasource(db) -> No
         McpGroupToolCreateSchema(source="rest", source_id=rest.id, external_name="search"),
     )
     await svc.validate_selection(group2.id)
+
+
+async def test_cross_catalog_external_name_uniqueness(db) -> None:
+    """同组内 GenBI 与 REST/上游 external_name 互斥，冲突抛中文 CustomException。"""
+    from app.modules.genbi.acl.service import GenbiGroupDatasourceService
+    from app.modules.mcp_gateway.rest_tool.model import RestToolModel
+
+    system = await _system(db, "oa_xcat", base_url="https://oa.example.com")
+    group = await _mcp_group(db, name="跨目录组")
+    rest = RestToolModel(
+        name="portal_search",
+        display_name="portal_search",
+        url="https://oa.example.com/search",
+        description="d",
+        input_schema={"type": "object"},
+        enabled=True,
+        system_id=system.id,
+    )
+    db.add(rest)
+    await db.flush()
+    rest2 = RestToolModel(
+        name="portal_lookup",
+        display_name="portal_lookup",
+        url="https://oa.example.com/lookup",
+        description="d",
+        input_schema={"type": "object"},
+        enabled=True,
+        system_id=system.id,
+    )
+    db.add(rest2)
+    await db.flush()
+
+    group_svc = McpGroupService(AuthSchema(), db)
+    ds_svc = GenbiGroupDatasourceService(AuthSchema(), db)
+    ds = await _datasource(db, system_id=system.id, name="跨目录源")
+
+    await group_svc.add_tool(
+        group.id,
+        McpGroupToolCreateSchema(source="rest", source_id=rest.id, external_name="shared_name"),
+    )
+
+    with pytest.raises(CustomException) as ei_attach:
+        await ds_svc.attach(
+            group_id=group.id,
+            datasource_id=ds.id,
+            external_name="shared_name",
+        )
+    assert ei_attach.value.status_code == 400
+    assert "外部名称" in str(ei_attach.value.msg)
+
+    await ds_svc.attach(
+        group_id=group.id,
+        datasource_id=ds.id,
+        external_name="genbi_only_name",
+    )
+
+    with pytest.raises(CustomException) as ei_add:
+        await group_svc.add_tool(
+            group.id,
+            McpGroupToolCreateSchema(source="rest", source_id=rest2.id, external_name="genbi_only_name"),
+        )
+    assert ei_add.value.status_code == 400
+    assert "外部名称" in str(ei_add.value.msg)
