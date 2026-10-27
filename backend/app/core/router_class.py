@@ -29,6 +29,7 @@ _SENSITIVE_KEYS: set[str] = {
     "secret_key",
     "authorization",
     "credential_value",
+    "private_key",
 }
 _REDACTED = "******"
 # 调试接口的 HTTP 响应在 reveal=true 时可能含明文 token；操作日志一律不落响应正文。
