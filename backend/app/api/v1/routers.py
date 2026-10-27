@@ -7,6 +7,7 @@ from app.modules.common.file.controller import FileRouter
 from app.modules.dbconsole.controller import DbConsoleRouter
 from app.modules.generator.gencode.controller import GenRouter
 from app.modules.genbi.datasource.controller import GenbiDatasourceRouter
+from app.modules.genbi.project.controller import GenbiProjectRouter
 from app.modules.mcp_gateway.auth.controller import BizAuthRouter
 from app.modules.mcp_gateway.auth.interactive_controller import InteractiveAuthRouter
 from app.modules.mcp_gateway.binding.controller import BizBindingRouter
@@ -97,6 +98,7 @@ DOMAIN_CONTROLLERS: dict[str, list[APIRouter]] = {
     ],
     "/genbi": [
         GenbiDatasourceRouter,
+        GenbiProjectRouter,
     ],
 }
 
