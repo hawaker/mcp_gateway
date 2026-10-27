@@ -123,3 +123,129 @@ class GenbiDeployOut(BaseSchema):
     stage: str | None = Field(default=None, description="阶段")
     error: str | None = Field(default=None, description="错误信息")
     deployed_at: Any = Field(default=None, description="部署时间")
+    smoke_report: dict[str, Any] | None = Field(default=None, description="冒烟报告")
+
+
+class GenbiRelationshipIn(BaseModel):
+    """同步/创建关系。"""
+
+    from_model_id: int = Field(..., ge=1, description="源模型ID")
+    to_model_id: int = Field(..., ge=1, description="目标模型ID")
+    join_type: str | None = Field(default="MANY_TO_ONE", max_length=32, description="连接类型")
+    condition: str | None = Field(default=None, description="连接条件")
+    properties: dict[str, Any] | None = Field(default=None, description="扩展属性")
+
+
+class GenbiRelationshipSyncRequest(BaseModel):
+    relationships: list[GenbiRelationshipIn] = Field(default_factory=list, description="关系列表")
+
+
+class GenbiRelationshipOut(BaseSchema):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: int = Field(description="项目ID")
+    from_model_id: int = Field(description="源模型ID")
+    to_model_id: int = Field(description="目标模型ID")
+    join_type: str | None = Field(default=None, description="连接类型")
+    condition: str | None = Field(default=None, description="连接条件")
+    properties: dict[str, Any] | None = Field(default=None, description="扩展属性")
+
+
+class GenbiAgentProfileOut(BaseModel):
+    """Agent 配置（存在 genbi_project.agent_profile）。字段对齐 tiga。"""
+
+    llm_model_id: int | None = Field(default=None, description="LLM 模型ID")
+    instructions: list[str] = Field(default_factory=list, description="系统指令")
+    tools_config: list[Any] = Field(default_factory=list, description="工具配置")
+    mcp_config: list[Any] = Field(default_factory=list, description="MCP 配置")
+    skills_config: dict[str, Any] = Field(default_factory=dict, description="技能配置")
+    knowledge_config: dict[str, Any] = Field(default_factory=dict, description="知识配置")
+    virtual_agent_id: str = Field(default="", description="虚拟 Agent ID")
+
+
+class GenbiAgentProfileUpdate(BaseModel):
+    llm_model_id: int | None = Field(default=None, description="LLM 模型ID")
+    instructions: list[str] | None = Field(default=None, description="系统指令")
+    tools_config: list[Any] | None = Field(default=None, description="工具配置")
+    mcp_config: list[Any] | None = Field(default=None, description="MCP 配置")
+    skills_config: dict[str, Any] | None = Field(default=None, description="技能配置")
+    knowledge_config: dict[str, Any] | None = Field(default=None, description="知识配置")
+    virtual_agent_id: str | None = Field(default=None, description="虚拟 Agent ID")
+
+
+class GenbiInstructionCreate(BaseModel):
+    instruction: str = Field(..., min_length=1, description="指令正文")
+    questions: list[str] = Field(default_factory=list, description="关联问题")
+    is_default: bool = Field(default=True, description="是否默认")
+
+    @field_validator("instruction")
+    @classmethod
+    def _validate_instruction(cls, value: str) -> str:
+        return _strip_required(value, "指令")
+
+
+class GenbiInstructionUpdate(BaseModel):
+    instruction: str | None = Field(default=None, min_length=1, description="指令正文")
+    questions: list[str] | None = Field(default=None, description="关联问题")
+    is_default: bool | None = Field(default=None, description="是否默认")
+
+
+class GenbiInstructionOut(BaseSchema):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: int = Field(description="项目ID")
+    instruction: str = Field(description="指令正文")
+    questions: list[Any] | None = Field(default=None, description="关联问题")
+    is_default: bool = Field(description="是否默认")
+
+
+class GenbiMetricDocCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255, description="文档名")
+    content: str = Field(..., min_length=1, description="文档内容")
+    enabled: bool = Field(default=True, description="是否启用")
+
+    @field_validator("name", "content")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return _strip_required(value, "字段")
+
+
+class GenbiMetricDocUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255, description="文档名")
+    content: str | None = Field(default=None, min_length=1, description="文档内容")
+    enabled: bool | None = Field(default=None, description="是否启用")
+
+
+class GenbiMetricDocOut(BaseSchema):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: int = Field(description="项目ID")
+    name: str = Field(description="文档名")
+    content: str = Field(description="文档内容")
+    enabled: bool = Field(description="是否启用")
+
+
+class GenbiSqlPairCreate(BaseModel):
+    question: str = Field(..., min_length=1, description="问题")
+    sql: str = Field(..., min_length=1, description="SQL")
+    enabled: bool = Field(default=True, description="是否启用")
+
+    @field_validator("question", "sql")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return _strip_required(value, "字段")
+
+
+class GenbiSqlPairUpdate(BaseModel):
+    question: str | None = Field(default=None, min_length=1, description="问题")
+    sql: str | None = Field(default=None, min_length=1, description="SQL")
+    enabled: bool | None = Field(default=None, description="是否启用")
+
+
+class GenbiSqlPairOut(BaseSchema):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: int = Field(description="项目ID")
+    question: str = Field(description="问题")
+    sql: str = Field(description="SQL")
+    enabled: bool = Field(description="是否启用")

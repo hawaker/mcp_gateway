@@ -5203,9 +5203,9 @@
 				"show_text_badge": null
 			},
 			{
-				"name": "项目部署",
+				"name": "项目工作台",
 				"type": 2,
-				"icon": "ri:rocket-line",
+				"icon": "ri:layout-grid-line",
 				"order": 2,
 				"permission": "module_genbi:project:query",
 				"route_name": "GenbiProject",
@@ -5215,7 +5215,7 @@
 				"keep_alive": true,
 				"hidden": false,
 				"always_show": false,
-				"title": "项目部署",
+				"title": "项目工作台",
 				"params": null,
 				"affix": false,
 				"redirect": null,

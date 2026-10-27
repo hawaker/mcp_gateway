@@ -17,16 +17,33 @@ from .crud import GenbiProjectCRUD
 from .mdl_builder import build_mdl_manifest, create_mdl_hash
 from .model import (
     GenbiDeployLogModel,
+    GenbiInstructionModel,
+    GenbiMetricDocModel,
     GenbiModelColumnModel,
     GenbiModelModel,
     GenbiProjectModel,
     GenbiRelationshipModel,
+    GenbiSqlPairModel,
 )
 from .schema import (
+    GenbiAgentProfileOut,
+    GenbiAgentProfileUpdate,
+    GenbiInstructionCreate,
+    GenbiInstructionOut,
+    GenbiInstructionUpdate,
+    GenbiMetricDocCreate,
+    GenbiMetricDocOut,
+    GenbiMetricDocUpdate,
     GenbiModelIn,
     GenbiModelOut,
     GenbiProjectOut,
     GenbiProjectQueryParam,
+    GenbiProjectUpdate,
+    GenbiRelationshipIn,
+    GenbiRelationshipOut,
+    GenbiSqlPairCreate,
+    GenbiSqlPairOut,
+    GenbiSqlPairUpdate,
 )
 from .wren_client import WrenClient, get_wren_client
 
@@ -93,6 +110,46 @@ class GenbiProjectService:
         if row is None:
             raise CustomException(msg="项目不存在")
         return row
+
+    async def update(self, project_id: int, data: GenbiProjectUpdate) -> GenbiProjectOut:
+        project = await self._get_project_row(project_id)
+        payload = data.model_dump(exclude_unset=True)
+        if "display_name" in payload and payload["display_name"] is not None:
+            payload["display_name"] = str(payload["display_name"]).strip()
+        for key, value in payload.items():
+            setattr(project, key, value)
+        await self.db.flush()
+        await self.db.refresh(project)
+        return GenbiProjectOut.model_validate(project)
+
+    @staticmethod
+    def _profile_from_dict(raw: dict[str, Any] | None) -> GenbiAgentProfileOut:
+        data = raw if isinstance(raw, dict) else {}
+        return GenbiAgentProfileOut(
+            llm_model_id=data.get("llm_model_id"),
+            instructions=list(data.get("instructions") or []),
+            tools_config=list(data.get("tools_config") or []),
+            mcp_config=list(data.get("mcp_config") or []),
+            skills_config=dict(data.get("skills_config") or {}),
+            knowledge_config=dict(data.get("knowledge_config") or {}),
+            virtual_agent_id=str(data.get("virtual_agent_id") or ""),
+        )
+
+    async def get_agent_profile(self, project_id: int) -> GenbiAgentProfileOut:
+        project = await self._get_project_row(project_id)
+        return self._profile_from_dict(project.agent_profile)
+
+    async def patch_agent_profile(
+        self, project_id: int, data: GenbiAgentProfileUpdate
+    ) -> GenbiAgentProfileOut:
+        project = await self._get_project_row(project_id)
+        current = dict(project.agent_profile or {})
+        patch = data.model_dump(exclude_unset=True)
+        current.update(patch)
+        project.agent_profile = current
+        await self.db.flush()
+        await self.db.refresh(project)
+        return self._profile_from_dict(project.agent_profile)
 
     async def list_models(self, project_id: int) -> list[GenbiModelOut]:
         await self._get_project_row(project_id)
@@ -262,3 +319,225 @@ class GenbiProjectService:
         await self.db.flush()
         await self.db.refresh(log)
         return log
+
+    async def list_deploy_logs(self, project_id: int, *, limit: int = 20) -> list[GenbiDeployLogModel]:
+        await self._get_project_row(project_id)
+        result = await self.db.execute(
+            select(GenbiDeployLogModel)
+            .where(
+                GenbiDeployLogModel.project_id == project_id,
+                GenbiDeployLogModel.is_deleted == False,  # noqa: E712
+            )
+            .order_by(GenbiDeployLogModel.id.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_relationships(self, project_id: int) -> list[GenbiRelationshipOut]:
+        await self._get_project_row(project_id)
+        result = await self.db.execute(
+            select(GenbiRelationshipModel)
+            .where(
+                GenbiRelationshipModel.project_id == project_id,
+                GenbiRelationshipModel.is_deleted == False,  # noqa: E712
+            )
+            .order_by(GenbiRelationshipModel.id)
+        )
+        return [GenbiRelationshipOut.model_validate(r) for r in result.scalars().all()]
+
+    async def sync_relationships(
+        self,
+        *,
+        project_id: int,
+        relationships: list[GenbiRelationshipIn] | list[dict[str, Any]],
+    ) -> list[GenbiRelationshipModel]:
+        project = await self._get_project_row(project_id)
+        model_ids = {
+            m.id
+            for m in (
+                await self.db.execute(
+                    select(GenbiModelModel).where(
+                        GenbiModelModel.project_id == project.id,
+                        GenbiModelModel.is_deleted == False,  # noqa: E712
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+        parsed = [
+            r if isinstance(r, GenbiRelationshipIn) else GenbiRelationshipIn.model_validate(r)
+            for r in relationships
+        ]
+        for item in parsed:
+            if item.from_model_id not in model_ids or item.to_model_id not in model_ids:
+                raise CustomException(msg="关系引用的模型不存在或不属于本项目")
+
+        await self.db.execute(
+            delete(GenbiRelationshipModel).where(GenbiRelationshipModel.project_id == project.id)
+        )
+        await self.db.flush()
+        created: list[GenbiRelationshipModel] = []
+        for item in parsed:
+            row = GenbiRelationshipModel(
+                project_id=project.id,
+                from_model_id=item.from_model_id,
+                to_model_id=item.to_model_id,
+                join_type=item.join_type,
+                condition=item.condition,
+                properties=item.properties,
+            )
+            self.db.add(row)
+            created.append(row)
+        await self.db.flush()
+        for row in created:
+            await self.db.refresh(row)
+        return created
+
+    async def list_instructions(self, project_id: int) -> list[GenbiInstructionOut]:
+        await self._get_project_row(project_id)
+        result = await self.db.execute(
+            select(GenbiInstructionModel)
+            .where(
+                GenbiInstructionModel.project_id == project_id,
+                GenbiInstructionModel.is_deleted == False,  # noqa: E712
+            )
+            .order_by(GenbiInstructionModel.id)
+        )
+        return [GenbiInstructionOut.model_validate(r) for r in result.scalars().all()]
+
+    async def create_instruction(
+        self, project_id: int, data: GenbiInstructionCreate
+    ) -> GenbiInstructionModel:
+        await self._get_project_row(project_id)
+        row = GenbiInstructionModel(
+            project_id=project_id,
+            instruction=data.instruction,
+            questions=data.questions,
+            is_default=bool(data.is_default),
+        )
+        self.db.add(row)
+        await self.db.flush()
+        await self.db.refresh(row)
+        return row
+
+    async def update_instruction(
+        self, project_id: int, instruction_id: int, data: GenbiInstructionUpdate
+    ) -> GenbiInstructionModel:
+        row = await self._get_knowledge_row(GenbiInstructionModel, project_id, instruction_id, "指令")
+        for key, value in data.model_dump(exclude_unset=True).items():
+            setattr(row, key, value)
+        await self.db.flush()
+        await self.db.refresh(row)
+        return row
+
+    async def delete_instruction(self, project_id: int, instruction_id: int) -> None:
+        row = await self._get_knowledge_row(GenbiInstructionModel, project_id, instruction_id, "指令")
+        row.is_deleted = True
+        row.deleted_time = datetime.now(UTC)
+        await self.db.flush()
+
+    async def list_metric_docs(self, project_id: int) -> list[GenbiMetricDocOut]:
+        await self._get_project_row(project_id)
+        result = await self.db.execute(
+            select(GenbiMetricDocModel)
+            .where(
+                GenbiMetricDocModel.project_id == project_id,
+                GenbiMetricDocModel.is_deleted == False,  # noqa: E712
+            )
+            .order_by(GenbiMetricDocModel.id)
+        )
+        return [GenbiMetricDocOut.model_validate(r) for r in result.scalars().all()]
+
+    async def create_metric_doc(
+        self, project_id: int, data: GenbiMetricDocCreate
+    ) -> GenbiMetricDocModel:
+        await self._get_project_row(project_id)
+        row = GenbiMetricDocModel(
+            project_id=project_id,
+            name=data.name,
+            content=data.content,
+            enabled=bool(data.enabled),
+        )
+        self.db.add(row)
+        await self.db.flush()
+        await self.db.refresh(row)
+        return row
+
+    async def update_metric_doc(
+        self, project_id: int, doc_id: int, data: GenbiMetricDocUpdate
+    ) -> GenbiMetricDocModel:
+        row = await self._get_knowledge_row(GenbiMetricDocModel, project_id, doc_id, "指标文档")
+        for key, value in data.model_dump(exclude_unset=True).items():
+            setattr(row, key, value)
+        await self.db.flush()
+        await self.db.refresh(row)
+        return row
+
+    async def delete_metric_doc(self, project_id: int, doc_id: int) -> None:
+        row = await self._get_knowledge_row(GenbiMetricDocModel, project_id, doc_id, "指标文档")
+        row.is_deleted = True
+        row.deleted_time = datetime.now(UTC)
+        await self.db.flush()
+
+    async def list_sql_pairs(self, project_id: int) -> list[GenbiSqlPairOut]:
+        await self._get_project_row(project_id)
+        result = await self.db.execute(
+            select(GenbiSqlPairModel)
+            .where(
+                GenbiSqlPairModel.project_id == project_id,
+                GenbiSqlPairModel.is_deleted == False,  # noqa: E712
+            )
+            .order_by(GenbiSqlPairModel.id)
+        )
+        return [GenbiSqlPairOut.model_validate(r) for r in result.scalars().all()]
+
+    async def create_sql_pair(self, project_id: int, data: GenbiSqlPairCreate) -> GenbiSqlPairModel:
+        await self._get_project_row(project_id)
+        row = GenbiSqlPairModel(
+            project_id=project_id,
+            question=data.question,
+            sql=data.sql,
+            enabled=bool(data.enabled),
+        )
+        self.db.add(row)
+        await self.db.flush()
+        await self.db.refresh(row)
+        return row
+
+    async def update_sql_pair(
+        self, project_id: int, pair_id: int, data: GenbiSqlPairUpdate
+    ) -> GenbiSqlPairModel:
+        row = await self._get_knowledge_row(GenbiSqlPairModel, project_id, pair_id, "SQL 问答对")
+        for key, value in data.model_dump(exclude_unset=True).items():
+            setattr(row, key, value)
+        await self.db.flush()
+        await self.db.refresh(row)
+        return row
+
+    async def delete_sql_pair(self, project_id: int, pair_id: int) -> None:
+        row = await self._get_knowledge_row(GenbiSqlPairModel, project_id, pair_id, "SQL 问答对")
+        row.is_deleted = True
+        row.deleted_time = datetime.now(UTC)
+        await self.db.flush()
+
+    async def _get_knowledge_row(
+        self,
+        model: type[Any],
+        project_id: int,
+        row_id: int,
+        label: str,
+    ) -> Any:
+        await self._get_project_row(project_id)
+        row = (
+            await self.db.execute(
+                select(model).where(
+                    model.id == row_id,
+                    model.project_id == project_id,
+                    model.is_deleted == False,  # noqa: E712
+                )
+            )
+        ).scalars().first()
+        if row is None:
+            raise CustomException(msg=f"{label}不存在")
+        return row

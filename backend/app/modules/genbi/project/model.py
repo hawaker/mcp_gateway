@@ -1,6 +1,7 @@
 """GenBI 项目与 MDL 元数据表（对齐 tiga genbi，按数据源归属）。"""
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -84,6 +85,24 @@ class GenbiProjectModel(ModelMixin):
     )
     deploy_logs = relationship(
         "GenbiDeployLogModel",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    instructions = relationship(
+        "GenbiInstructionModel",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    metric_docs = relationship(
+        "GenbiMetricDocModel",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    sql_pairs = relationship(
+        "GenbiSqlPairModel",
         back_populates="project",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -295,3 +314,63 @@ class GenbiDeployLogModel(ModelMixin):
     )
 
     project = relationship("GenbiProjectModel", back_populates="deploy_logs")
+
+
+class GenbiInstructionModel(ModelMixin):
+    """问数指令（知识库）。字段名对齐 tiga genbi_instructions。"""
+
+    __tablename__: str = "genbi_instruction"
+    __table_args__: dict[str, str] = {"comment": "GenBI 问数指令表"}
+
+    project_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("genbi_project.id", ondelete="CASCADE", onupdate="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="项目ID",
+    )
+    instruction: Mapped[str] = mapped_column(Text, nullable=False, comment="指令正文")
+    questions: Mapped[list[Any] | None] = mapped_column(JSONType, nullable=True, comment="关联问题列表")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否默认")
+
+    project = relationship("GenbiProjectModel", back_populates="instructions")
+
+
+class GenbiMetricDocModel(ModelMixin):
+    """指标文档（知识库）。字段名对齐 tiga genbi_metric_docs。"""
+
+    __tablename__: str = "genbi_metric_doc"
+    __table_args__: dict[str, str] = {"comment": "GenBI 指标文档表"}
+
+    project_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("genbi_project.id", ondelete="CASCADE", onupdate="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="项目ID",
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False, comment="文档名")
+    content: Mapped[str] = mapped_column(Text, nullable=False, comment="文档内容")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="是否启用")
+
+    project = relationship("GenbiProjectModel", back_populates="metric_docs")
+
+
+class GenbiSqlPairModel(ModelMixin):
+    """SQL 问答对（知识库）。字段名对齐 tiga genbi_sql_pairs。"""
+
+    __tablename__: str = "genbi_sql_pair"
+    __table_args__: dict[str, str] = {"comment": "GenBI SQL 问答对表"}
+
+    project_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("genbi_project.id", ondelete="CASCADE", onupdate="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="项目ID",
+    )
+    question: Mapped[str] = mapped_column(Text, nullable=False, comment="问题")
+    sql: Mapped[str] = mapped_column(Text, nullable=False, comment="SQL")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="是否启用")
+
+    project = relationship("GenbiProjectModel", back_populates="sql_pairs")

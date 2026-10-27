@@ -1,44 +1,53 @@
-<!-- GenBI 项目：每数据源一条；同步 MDL 模型后可部署 -->
+<!-- GenBI 项目：列表 + tiga 对齐工作台（Setup → Modeling → Knowledge → Capabilities → Deploy） -->
 <template>
   <div class="fa-full-height">
-    <FaSearchBar
-      v-show="showSearch"
-      ref="searchBarRef"
-      v-model="searchForm"
-      :items="searchItems"
-      :is-expand="false"
-      :show-expand="false"
-      :show-reset="true"
-      :show-search="true"
-      @search="handleSearch"
-      @reset="onResetSearch"
+    <GenbiProjectWorkspace
+      v-if="workspaceProjectId"
+      :project-id="workspaceProjectId"
+      :initial-tab="workspaceTab"
+      @back="closeWorkspace"
     />
 
-    <ElCard class="fa-table-card" :style="{ 'margin-top': showSearch ? '12px' : '0' }">
-      <FaTableHeader
-        v-model:columns="columnChecks"
-        v-model:showSearchBar="showSearch"
-        :loading="loading"
-        @refresh="refreshData"
-      >
-        <template #left>
-          <FaTableHeaderLeft
-            :perm-create="['module_genbi:project:create']"
-            :create-loading="createLoading"
-            @add="handleAdd"
-          />
-        </template>
-      </FaTableHeader>
-
-      <FaTable
-        :loading="loading"
-        :data="data"
-        :columns="columns"
-        :pagination="pagination"
-        @pagination:size-change="handleSizeChange"
-        @pagination:current-change="handleCurrentChange"
+    <template v-else>
+      <FaSearchBar
+        v-show="showSearch"
+        ref="searchBarRef"
+        v-model="searchForm"
+        :items="searchItems"
+        :is-expand="false"
+        :show-expand="false"
+        :show-reset="true"
+        :show-search="true"
+        @search="handleSearch"
+        @reset="onResetSearch"
       />
-    </ElCard>
+
+      <ElCard class="fa-table-card" :style="{ 'margin-top': showSearch ? '12px' : '0' }">
+        <FaTableHeader
+          v-model:columns="columnChecks"
+          v-model:showSearchBar="showSearch"
+          :loading="loading"
+          @refresh="refreshData"
+        >
+          <template #left>
+            <FaTableHeaderLeft
+              :perm-create="['module_genbi:project:create']"
+              :create-loading="createLoading"
+              @add="handleAdd"
+            />
+          </template>
+        </FaTableHeader>
+
+        <FaTable
+          :loading="loading"
+          :data="data"
+          :columns="columns"
+          :pagination="pagination"
+          @pagination:size-change="handleSizeChange"
+          @pagination:current-change="handleCurrentChange"
+        />
+      </ElCard>
+    </template>
 
     <FaDialog
       v-model="dialogVisible.visible"
@@ -68,40 +77,12 @@
         class="crud-dialog-art-form"
       />
     </FaDialog>
-
-    <FaDialog
-      v-model="modelsVisible"
-      title="同步模型"
-      width="860px"
-      dialog-class="crud-embed-dialog"
-      modal-class="crud-embed-dialog"
-      form-mode="create"
-      :confirm-loading="modelsSaving"
-      confirm-text="保存模型"
-      @cancel="modelsVisible = false"
-      @close="modelsVisible = false"
-      @confirm="saveModels"
-    >
-      <div class="genbi-models">
-        <p class="genbi-models__hint">
-          整表替换项目下的 MDL 模型。JSON 数组，每项含 display_name / source_table_name / reference_name / columns。
-        </p>
-        <ElInput
-          v-model="modelsJson"
-          type="textarea"
-          :rows="16"
-          placeholder='[{"display_name":"订单","source_table_name":"orders","reference_name":"orders","columns":[{"display_name":"ID","source_column_name":"id","column_type":"integer"}]}]'
-        />
-      </div>
-    </FaDialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus";
 import GenbiDatasourceAPI, { type GenbiDatasourceTable } from "@/api/module_genbi/datasource";
 import GenbiProjectAPI, {
-  type GenbiModelIn,
   type GenbiProjectForm,
   type GenbiProjectPageQuery,
   type GenbiProjectTable,
@@ -111,6 +92,7 @@ import type { SearchFormItem } from "@/components/forms/fa-search-bar/index.vue"
 import FaForm from "@/components/forms/fa-form/index.vue";
 import FaTableHeader from "@/components/tables/fa-table-header/index.vue";
 import { renderTableOperationCell, type TableOperationAction } from "@utils";
+import GenbiProjectWorkspace from "./workspace/index.vue";
 
 defineOptions({
   name: "GenbiProject",
@@ -162,16 +144,39 @@ const searchItems = computed<SearchFormItem[]>(() => [
 
 const createLoading = ref(false);
 
+const workspaceProjectId = ref<number>();
+const workspaceTab = ref("setup");
+
+function openWorkspace(row: GenbiProjectTable, tab = "setup") {
+  if (!row.id) return;
+  workspaceTab.value = tab;
+  workspaceProjectId.value = row.id;
+}
+
+async function closeWorkspace() {
+  workspaceProjectId.value = undefined;
+  await refreshData();
+}
+
 function rowActions(row: GenbiProjectTable): TableOperationAction[] {
   return [
     {
-      key: "models",
-      label: "模型",
+      key: "workspace",
+      label: "工作台",
+      artType: "edit",
+      icon: "ri:layout-grid-line",
+      iconColor: "var(--el-color-primary)",
+      perm: "module_genbi:project:query",
+      run: () => openWorkspace(row, "setup"),
+    },
+    {
+      key: "modeling",
+      label: "建模",
       artType: "edit",
       icon: "ri:table-line",
       iconColor: "var(--el-color-primary)",
       perm: "module_genbi:project:update",
-      run: () => void openModels(row),
+      run: () => openWorkspace(row, "modeling"),
     },
     {
       key: "deploy",
@@ -180,7 +185,7 @@ function rowActions(row: GenbiProjectTable): TableOperationAction[] {
       icon: "ri:rocket-line",
       iconColor: "var(--el-color-success)",
       perm: "module_genbi:project:update",
-      run: () => void deployProject(row),
+      run: () => openWorkspace(row, "deploy"),
     },
   ];
 }
@@ -218,7 +223,7 @@ const {
       {
         prop: "operation",
         label: "操作",
-        width: 140,
+        width: 180,
         fixed: "right",
         align: "center",
         formatter: (row: GenbiProjectTable) =>
@@ -311,101 +316,7 @@ async function onResetSearch() {
   await resetSearchParams();
 }
 
-const modelsVisible = ref(false);
-const modelsSaving = ref(false);
-const modelsJson = ref("[]");
-const activeProject = ref<GenbiProjectTable>();
-
-function modelsToSyncPayload(models: Awaited<ReturnType<typeof GenbiProjectAPI.listModels>>["data"]["data"]): GenbiModelIn[] {
-  return (models ?? []).map((model) => ({
-    display_name: model.display_name || "",
-    source_table_name: model.source_table_name || "",
-    reference_name: model.reference_name || "",
-    ref_sql: model.ref_sql ?? null,
-    cached: model.cached === true,
-    refresh_time: model.refresh_time ?? null,
-    properties: model.properties ?? null,
-    columns: (model.columns ?? []).map((col) => ({
-      display_name: col.display_name || "",
-      source_column_name: col.source_column_name || "",
-      column_type: col.column_type || "varchar",
-      is_calculated: col.is_calculated === true,
-      expression: col.expression ?? null,
-      properties: col.properties ?? null,
-    })),
-  }));
-}
-
-async function openModels(row: GenbiProjectTable) {
-  if (!row.id) return;
-  activeProject.value = row;
-  const response = await GenbiProjectAPI.listModels(row.id);
-  const payload = modelsToSyncPayload(response.data.data);
-  modelsJson.value = JSON.stringify(payload.length ? payload : [], null, 2);
-  modelsVisible.value = true;
-}
-
-async function saveModels() {
-  const projectId = activeProject.value?.id;
-  if (!projectId) return;
-  let models: GenbiModelIn[];
-  try {
-    const parsed = JSON.parse(modelsJson.value) as unknown;
-    if (!Array.isArray(parsed) || parsed.length < 1) {
-      ElMessage.error("模型须为非空 JSON 数组");
-      return;
-    }
-    models = parsed as GenbiModelIn[];
-  } catch {
-    ElMessage.error("模型 JSON 无法解析");
-    return;
-  }
-  modelsSaving.value = true;
-  try {
-    await GenbiProjectAPI.syncModels(projectId, models);
-    modelsVisible.value = false;
-    ElMessage.success("已保存模型");
-    await refreshData();
-  } finally {
-    modelsSaving.value = false;
-  }
-}
-
-async function deployProject(row: GenbiProjectTable) {
-  if (!row.id) return;
-  try {
-    await ElMessageBox.confirm(`确认部署项目「${row.display_name || row.id}」？`, "部署", {
-      type: "warning",
-      confirmButtonText: "部署",
-      cancelButtonText: "取消",
-    });
-  } catch {
-    return;
-  }
-  const response = await GenbiProjectAPI.deploy(row.id, false);
-  const result = response.data.data;
-  if (result?.error) {
-    ElMessage.error(result.error);
-  } else {
-    ElMessage.success(`部署完成：${result?.status || "ok"}`);
-  }
-  await refreshData();
-}
-
 onMounted(() => {
   void loadDatasources();
 });
 </script>
-
-<style scoped>
-.genbi-models {
-  padding: 0 16px 12px;
-}
-
-.genbi-models__hint {
-  margin: 0 0 12px;
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
-  line-height: 1.5;
-}
-</style>
