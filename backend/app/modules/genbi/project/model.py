@@ -6,14 +6,18 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
-    UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import JSONType, ModelMixin
+
+# Soft-delete 友好：仅未删除行参与唯一约束（PostgreSQL / SQLite 部分唯一索引）。
+_ACTIVE_ROW = text("is_deleted = false")
 
 
 class GenbiProjectModel(ModelMixin):
@@ -21,7 +25,13 @@ class GenbiProjectModel(ModelMixin):
 
     __tablename__: str = "genbi_project"
     __table_args__ = (
-        UniqueConstraint("datasource_id", name="uq_genbi_project_datasource_id"),
+        Index(
+            "uq_genbi_project_datasource_id",
+            "datasource_id",
+            unique=True,
+            postgresql_where=_ACTIVE_ROW,
+            sqlite_where=_ACTIVE_ROW,
+        ),
         {"comment": "GenBI 项目表"},
     )
 
@@ -172,7 +182,14 @@ class GenbiViewModel(ModelMixin):
 
     __tablename__: str = "genbi_view"
     __table_args__ = (
-        UniqueConstraint("project_id", "name", name="uq_genbi_view_project_id_name"),
+        Index(
+            "uq_genbi_view_project_id_name",
+            "project_id",
+            "name",
+            unique=True,
+            postgresql_where=_ACTIVE_ROW,
+            sqlite_where=_ACTIVE_ROW,
+        ),
         {"comment": "GenBI MDL 视图表"},
     )
 
@@ -195,7 +212,14 @@ class GenbiMetricModel(ModelMixin):
 
     __tablename__: str = "genbi_metric"
     __table_args__ = (
-        UniqueConstraint("project_id", "name", name="uq_genbi_metric_project_id_name"),
+        Index(
+            "uq_genbi_metric_project_id_name",
+            "project_id",
+            "name",
+            unique=True,
+            postgresql_where=_ACTIVE_ROW,
+            sqlite_where=_ACTIVE_ROW,
+        ),
         {"comment": "GenBI MDL 指标表"},
     )
 

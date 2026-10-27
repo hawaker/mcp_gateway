@@ -74,3 +74,22 @@ async def test_reject_duplicate_project_for_same_datasource(db) -> None:
     with pytest.raises(CustomException) as ei:
         await svc.create(datasource_id=ds.id, display_name="项目二")
     assert "已存在" in str(ei.value.msg) or "重复" in str(ei.value.msg)
+
+
+async def test_recreate_project_after_soft_delete_same_datasource(db) -> None:
+    """软删除后同一 datasource 应可再创建（依赖 is_deleted=false 部分唯一索引）。"""
+    from app.modules.genbi.project.crud import GenbiProjectCRUD
+    from app.modules.genbi.project.service import GenbiProjectService
+
+    system = await _system(db, "oa_genbi_proj3", base_url="https://oa.example.com")
+    ds = await _datasource(db, system_id=system.id, name="源 B")
+    auth = AuthSchema()
+    svc = GenbiProjectService(auth, db)
+
+    row = await svc.create(datasource_id=ds.id, display_name="将删项目")
+    await GenbiProjectCRUD(auth, db).set([row.id], is_deleted=True)
+
+    recreated = await svc.create(datasource_id=ds.id, display_name="重建项目")
+    assert recreated.id != row.id
+    assert recreated.datasource_id == ds.id
+    assert recreated.display_name == "重建项目"
