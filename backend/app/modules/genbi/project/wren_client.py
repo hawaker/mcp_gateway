@@ -7,8 +7,16 @@ Vector index uses the **existing** application PostgreSQL (pgvector) — see
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
+
+_DEPLOY_POLL_INTERVAL = 2.0
+_DEPLOY_POLL_TIMEOUT = 180.0
 
 
 @dataclass(frozen=True)
@@ -54,12 +62,7 @@ class StubWrenClient:
 
 
 class SettingsWrenClient:
-    """Production plug-in point: uses ``GENBI_WREN_*`` / ``GENBI_IBIS_*``.
-
-    Until the full Wren AI runtime is wired (later tasks), this client validates
-    configuration and records a successful deploy the same way as the stub —
-    so deploy_log / mdl_hash gates work end-to-end without a second vector DB.
-    """
+    """Production client: in-process ``prepare_semantics`` or HTTP Wren AI."""
 
     async def deploy_semantics(
         self,
@@ -70,16 +73,57 @@ class SettingsWrenClient:
     ) -> WrenDeployResult:
         from app.config.setting import settings
 
-        # Touch settings so misconfiguration surfaces early; vector URL must resolve
-        # to the app Postgres (same DATABASE_* / explicit GENBI_VECTOR_* override).
         _ = settings.GENBI_IBIS_ENDPOINT
         _ = settings.GENBI_WREN_ENGINE_ENDPOINT
         _ = settings.genbi_vector_database_url
         if not manifest.get("models"):
             raise ValueError("manifest has no models")
-        return WrenDeployResult(mdl_hash=mdl_hash, status="finished")
+
+        mdl_json = json.dumps(manifest, ensure_ascii=False)
+        project_key = str(project_id)
+
+        from app.modules.genbi.ai.http_client import http_ai_configured, http_prepare_semantics
+
+        if http_ai_configured():
+            await http_prepare_semantics(
+                mdl=mdl_json,
+                mdl_hash=mdl_hash,
+                project_id=project_key,
+            )
+            return WrenDeployResult(mdl_hash=mdl_hash, status="finished")
+
+        try:
+            from app.modules.genbi.ai import facade as genbi_ai
+
+            await genbi_ai.prepare_semantics(mdl_json, mdl_hash, project_key)
+            ok = await self._wait_semantics_ready(mdl_hash)
+            if not ok:
+                raise RuntimeError("semantics preparation failed or timed out")
+            return WrenDeployResult(mdl_hash=mdl_hash, status="finished")
+        except Exception as exc:
+            logger.exception("in-process prepare_semantics failed project=%s", project_id)
+            raise RuntimeError(
+                "Wren 语义部署失败：请配置 GENBI_WREN_AI_ENDPOINT（HTTP）"
+                "或安装 GenBI AI 依赖并配置 OPENAI_/GENBI_EMBED_*。"
+                f" 原因: {exc}"
+            ) from exc
+
+    async def _wait_semantics_ready(self, mdl_hash: str) -> bool:
+        from app.modules.genbi.ai import facade as genbi_ai
+
+        elapsed = 0.0
+        while elapsed < _DEPLOY_POLL_TIMEOUT:
+            status_body = await genbi_ai.get_semantics_status(mdl_hash)
+            status = (status_body.get("status") or "").lower()
+            if status == "finished":
+                return True
+            if status == "failed":
+                return False
+            await asyncio.sleep(_DEPLOY_POLL_INTERVAL)
+            elapsed += _DEPLOY_POLL_INTERVAL
+        return False
 
 
 def get_wren_client() -> WrenClient:
-    """Default client: SettingsWrenClient (stub-compatible until real Wren lands)."""
+    """Default client: SettingsWrenClient (real wiring; Stub* for tests)."""
     return SettingsWrenClient()

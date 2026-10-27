@@ -1,4 +1,4 @@
-"""SQL preview executor (mockable; ibis later)."""
+"""SQL preview executor (ibis / Wren engine)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ class SqlExecutor(Protocol):
         datasource: GenbiDatasourceModel,
         sql: str,
         limit: int = 50,
+        manifest: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Return ``{"columns": [...], "rows": [...]}``."""
         ...
@@ -33,6 +34,7 @@ class StubSqlExecutor:
         self.rows = rows if rows is not None else [{"value": 1}]
         self.execute_calls = 0
         self.last_sql: str | None = None
+        self.last_manifest: dict[str, Any] | None = None
 
     async def execute_preview(
         self,
@@ -40,15 +42,17 @@ class StubSqlExecutor:
         datasource: GenbiDatasourceModel,
         sql: str,
         limit: int = 50,
+        manifest: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self.execute_calls += 1
         self.last_sql = sql
+        self.last_manifest = manifest
         _ = datasource, limit
         return {"columns": list(self.columns), "rows": list(self.rows)}
 
 
 class SettingsSqlExecutor:
-    """Production plug-in point for ibis / Wren engine preview."""
+    """Production plug-in: ibis HTTP preview (``run_mdl_sql_preview``)."""
 
     async def execute_preview(
         self,
@@ -56,11 +60,21 @@ class SettingsSqlExecutor:
         datasource: GenbiDatasourceModel,
         sql: str,
         limit: int = 50,
+        manifest: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from app.config.setting import settings
+        from app.modules.genbi.ibis.preview import run_mdl_sql_preview
 
-        _ = settings.GENBI_IBIS_ENDPOINT, datasource, sql, limit
-        raise RuntimeError("SQL 预览执行器尚未配置")
+        if not (settings.GENBI_IBIS_ENDPOINT or "").strip():
+            raise RuntimeError("GENBI_IBIS_ENDPOINT is not configured")
+        if not manifest or not manifest.get("models"):
+            raise RuntimeError("MDL manifest is required for ibis SQL preview")
+        return await run_mdl_sql_preview(
+            datasource,
+            sql,
+            manifest,
+            limit=limit,
+        )
 
 
 def get_sql_executor() -> SqlExecutor:

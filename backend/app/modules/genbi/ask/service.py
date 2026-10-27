@@ -10,7 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.base_schema import AuthSchema
 from app.modules.genbi.datasource.crud import GenbiDatasourceCRUD
-from app.modules.genbi.project.model import GenbiDeployLogModel, GenbiProjectModel
+from app.modules.genbi.project.mdl_builder import build_mdl_manifest
+from app.modules.genbi.project.model import (
+    GenbiDeployLogModel,
+    GenbiModelModel,
+    GenbiProjectModel,
+    GenbiRelationshipModel,
+)
 
 from .acl import (
     AclRewriteError,
@@ -115,10 +121,12 @@ class AskService:
         preview: dict[str, Any] | None = None
         truncated = False
         try:
+            manifest = await self._load_manifest(project, ds)
             preview = await executor.execute_preview(
                 datasource=ds,
                 sql=sql,
                 limit=_PREVIEW_LIMIT,
+                manifest=manifest,
             )
             truncated = len(preview.get("rows") or []) >= _PREVIEW_LIMIT
         except Exception:
@@ -130,6 +138,46 @@ class AskService:
             )
 
         return format_ask_tool_payload(sql=sql, preview=preview, truncated=truncated)
+
+    async def _load_manifest(
+        self,
+        project: GenbiProjectModel,
+        datasource: Any,
+    ) -> dict[str, Any]:
+        from sqlalchemy.orm import selectinload
+
+        models = list(
+            (
+                await self.db.execute(
+                    select(GenbiModelModel)
+                    .where(
+                        GenbiModelModel.project_id == project.id,
+                        GenbiModelModel.is_deleted == False,  # noqa: E712
+                    )
+                    .options(selectinload(GenbiModelModel.columns))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        rels = list(
+            (
+                await self.db.execute(
+                    select(GenbiRelationshipModel).where(
+                        GenbiRelationshipModel.project_id == project.id,
+                        GenbiRelationshipModel.is_deleted == False,  # noqa: E712
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return build_mdl_manifest(
+            project=project,
+            datasource=datasource,
+            models=models,
+            relationships=rels,
+        )
 
     async def _latest_successful_deploy(self, project_id: int) -> GenbiDeployLogModel | None:
         rows = (

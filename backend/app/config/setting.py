@@ -169,8 +169,20 @@ class Settings(BaseSettings):
     # ******************* GenBI / Wren ******************* #
     # ================================================= #
     # ibis / Wren engine endpoints (optional until compose is up)
-    GENBI_IBIS_ENDPOINT: str = "http://127.0.0.1:8001"
+    GENBI_IBIS_ENDPOINT: str = "http://127.0.0.1:18000"
     GENBI_WREN_ENGINE_ENDPOINT: str = "http://127.0.0.1:8080"
+    # Optional external Wren AI HTTP (ask + semantics-preparations). Empty → in-process vendor.
+    GENBI_WREN_AI_ENDPOINT: str = ""
+    GENBI_AI_CONFIG_PATH: str = ""
+    GENBI_AI_MAX_TENANT_RUNTIMES: int = 16
+    # LLM / embed for in-process Wren AI (reuse OPENAI_* when unset)
+    GENBI_EMBED_API_KEY: str = ""
+    GENBI_EMBED_API_BASE: str = ""
+    GENBI_EMBEDDING_MODEL_ID: str = ""
+    GENBI_EMBEDDING_DIMENSIONS: int = 1024
+    GENBI_LLM_TIMEOUT: int = 120
+    GENBI_EMBED_TIMEOUT: int = 600
+    GENBI_VECTOR_RECREATE_INDEX: bool = False
     # Vector index MUST use the same application PostgreSQL (pgvector).
     # Leave GENBI_VECTOR_* empty to reuse DATABASE_* below — do NOT add a second vector DB.
     GENBI_VECTOR_DATABASE_URL: str = ""

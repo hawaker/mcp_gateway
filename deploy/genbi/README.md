@@ -14,6 +14,21 @@ Optional Docker sidecars for semantic SQL (Wren Engine) and connector execution 
 
 3. Leave `GENBI_VECTOR_*` empty so the backend reuses `DATABASE_*` (see `backend/env/.env.example`). Only set `GENBI_VECTOR_DATABASE_URL` / `GENBI_VECTOR_PG_*` if you must override — still point at **the same** Postgres, not a new service.
 
+4. **LLM / embedding** (required for NL→SQL ask + semantics deploy indexing):
+
+   | Env | Purpose |
+   |-----|---------|
+   | `OPENAI_API_KEY` | LLM (and embed fallback) API key |
+   | `OPENAI_BASE_URL` | OpenAI-compatible base URL (optional) |
+   | `OPENAI_MODEL` | Chat model id (default used by Wren AI) |
+   | `GENBI_EMBED_API_KEY` | Embedder key (falls back to `OPENAI_API_KEY`) |
+   | `GENBI_EMBED_API_BASE` | Embedder base (falls back to `OPENAI_BASE_URL`) |
+   | `GENBI_EMBEDDING_MODEL_ID` | Embedding model id |
+   | `GENBI_EMBEDDING_DIMENSIONS` | Vector dim for pgvector tables (default `1024`) |
+   | `GENBI_WREN_AI_ENDPOINT` | Optional external Wren AI HTTP; empty → in-process vendor |
+
+   In-process Wren AI optional deps: `cd backend && uv sync --extra genbi` (haystack / litellm / pgvector).
+
 ## Start Wren + ibis
 
 ```bash
@@ -41,6 +56,11 @@ DATABASE_PORT = 5432
 
 GENBI_IBIS_ENDPOINT = http://127.0.0.1:18000
 GENBI_WREN_ENGINE_ENDPOINT = http://127.0.0.1:8080
+# GENBI_WREN_AI_ENDPOINT = http://127.0.0.1:5555   # optional HTTP Wren AI
+OPENAI_API_KEY = sk-...
+# OPENAI_BASE_URL = https://api.openai.com/v1
+# OPENAI_MODEL = gpt-4o-mini
+# GENBI_EMBEDDING_MODEL_ID = text-embedding-3-small
 # GENBI_VECTOR_* intentionally unset → same Postgres + pgvector
 ```
 
