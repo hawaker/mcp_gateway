@@ -1,6 +1,8 @@
 # FastapiAdmin 部署说明
 
 > **与仓库根文档的关系**：项目总览、快速开始、演示账号等请以 [根目录 README.md](../README.md) 为准；**本文档**侧重 Docker 部署的详细操作。
+>
+> **GenBI（Wren / ibis）**：可选旁路栈见 [deploy/genbi/README.md](../deploy/genbi/README.md)。向量索引使用**现有**应用 PostgreSQL（pgvector），不在本 compose 中增加第二套向量库。
 
 ## 项目结构
 

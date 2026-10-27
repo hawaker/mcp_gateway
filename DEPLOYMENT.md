@@ -35,6 +35,8 @@ backups/                    # 部署前自动备份（每类保留 5 份）
 
 仓库侧：`deploy-artifacts.sh`（本机执行的成品部署脚本）、`backend/requirements/`（依赖分组）、`.github/workflows/`（CI）。
 
+**GenBI**：Wren Engine + ibis 旁路见 [`deploy/genbi/`](deploy/genbi/README.md)。向量走现有应用 Postgres（pgvector），勿新增独立向量库服务。
+
 ---
 
 ## 2. 日常部署

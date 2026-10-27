@@ -1,0 +1,49 @@
+# GenBI Wren / ibis sidecars (optional overlay).
+#
+# Vectors: reuse the EXISTING application PostgreSQL with pgvector.
+# Do NOT add Qdrant, Milvus, or a second Postgres service here.
+#
+# Usage (from this directory):
+#   cp .env.example .env   # edit endpoints if needed
+#   docker compose --env-file .env up -d
+#
+# Point backend env at these services (see README.md / backend/env/.env.example):
+#   GENBI_IBIS_ENDPOINT=http://127.0.0.1:18000
+#   GENBI_WREN_ENGINE_ENDPOINT=http://127.0.0.1:8080
+#   # leave GENBI_VECTOR_* empty → same DATABASE_* Postgres
+
+services:
+  genbi-wren-engine:
+    image: ghcr.io/canner/wren-engine:${WREN_ENGINE_VERSION:-0.22.0}
+    container_name: genbi-wren-engine
+    restart: unless-stopped
+    ports:
+      # Bind localhost only — engine is not a public API
+      - "127.0.0.1:${GENBI_WREN_ENGINE_HOST_PORT:-8080}:8080"
+    volumes:
+      - wren_engine_data:/usr/src/app/data
+    networks:
+      - genbi_net
+
+  genbi-ibis:
+    image: ghcr.io/canner/wren-engine-ibis:${IBIS_SERVER_VERSION:-0.22.0}
+    container_name: genbi-ibis
+    restart: unless-stopped
+    ports:
+      # Host 18000 avoids clash with FastAPI backend (:8001)
+      - "127.0.0.1:${GENBI_IBIS_HOST_PORT:-18000}:8000"
+    environment:
+      WREN_ENGINE_ENDPOINT: ${GENBI_WREN_ENGINE_ENDPOINT:-http://genbi-wren-engine:8080}
+    depends_on:
+      - genbi-wren-engine
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - genbi_net
+
+volumes:
+  wren_engine_data:
+
+networks:
+  genbi_net:
+    driver: bridge
