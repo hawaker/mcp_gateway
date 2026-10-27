@@ -216,7 +216,7 @@ class McpGroupService:
         return await self.update_tool(tool_id, McpGroupToolUpdateSchema(enabled=enabled))
 
     async def tools_for(self, group_id: int) -> list[PublishedToolSchema]:
-        """下一任务将把这份目录暴露为 tools/list。这里不做 JSON-RPC。"""
+        """REST / 上游 / 已启用 GenBI 数据源（ask_bi）目录。这里不做 JSON-RPC。"""
         await self._require_group(group_id)
         rows = await McpGroupToolCRUD(self.auth, self.db).get_list(
             search={"group_id": group_id, "enabled": True},
@@ -227,6 +227,18 @@ class McpGroupService:
             item = await self._publish(row.source, row.source_id, row.external_name)
             if item is not None:
                 catalog.append(item)
+        from app.modules.genbi.runtime_tool import list_enabled_ask_bi_tools
+
+        for ask in await list_enabled_ask_bi_tools(self.auth, self.db, group_id):
+            catalog.append(
+                PublishedToolSchema(
+                    name=ask["name"],
+                    description=ask["description"],
+                    input_schema=dict(ask["input_schema"] or {}),
+                    source="genbi",
+                    source_id=int(ask["source_id"]),
+                )
+            )
         return catalog
 
     async def page_members(

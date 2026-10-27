@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.base_schema import BaseQueryParam, BaseSchema
 
-Source = Literal["rest", "upstream"]
+Source = Literal["rest", "upstream", "genbi"]
 PrincipalType = Literal["user", "group"]
 
 

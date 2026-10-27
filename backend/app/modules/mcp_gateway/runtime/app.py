@@ -59,6 +59,14 @@ class _UpstreamCall:
 
 
 @dataclass(frozen=True, slots=True)
+class _AskCall:
+    group_id: int
+    datasource_id: int
+    system_id: int | None
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class _CallFact:
     user_id: int
     group_id: int
@@ -232,7 +240,7 @@ class McpRuntime:
         if not isinstance(params, dict):
             params = {}
         started = time.perf_counter()
-        plan: _Ready | _RestCall | _UpstreamCall | None = None
+        plan: _Ready | _RestCall | _UpstreamCall | _AskCall | None = None
         fact: _CallFact | None = None
         try:
             async with self._db() as db:
@@ -244,6 +252,20 @@ class McpRuntime:
                 if isinstance(plan, _Ready):
                     await self._record(db, fact, None, False, started)
                     return plan.payload
+                if isinstance(plan, _AskCall):
+                    performed = await self._perform_ask(db, plan)
+                    await self._record(
+                        db,
+                        fact,
+                        performed.http_status,
+                        _succeeded(performed.http_status),
+                        started,
+                    )
+                    return _text_result(
+                        rpc_id,
+                        performed.text,
+                        is_error=performed.is_error or performed.text == _DENIED,
+                    )
         except CredentialRejected as exc:
             return _unauthorized(exc)
         if not isinstance(plan, _RestCall | _UpstreamCall):
@@ -261,7 +283,7 @@ class McpRuntime:
         method: Any,
         rpc_id: Any,
         params: dict[str, Any],
-    ) -> _Ready | _RestCall | _UpstreamCall:
+    ) -> _Ready | _RestCall | _UpstreamCall | _AskCall:
         if method == "initialize":
             return _Ready(
                 {
@@ -312,7 +334,7 @@ class McpRuntime:
         rpc_id: Any,
         name: str,
         arguments: dict[str, Any],
-    ) -> _Ready | _RestCall | _UpstreamCall:
+    ) -> _Ready | _RestCall | _UpstreamCall | _AskCall:
         catalog = await McpGroupService(AuthSchema(), db).tools_for(group_id)
         match = next((item for item in catalog if item.name == name), None)
         if match is None:
@@ -327,6 +349,23 @@ class McpRuntime:
             if loaded is None:
                 return _Ready(_text_result(rpc_id, _DENIED, is_error=True))
             return loaded
+        if match.source == "genbi":
+            from app.modules.genbi.acl.crud import GenbiGroupDatasourceCRUD
+            from app.modules.genbi.datasource.crud import GenbiDatasourceCRUD
+
+            auth = AuthSchema()
+            link = await GenbiGroupDatasourceCRUD(auth, db).get(id=match.source_id)
+            if link is None or not link.enabled or link.group_id != group_id:
+                return _Ready(_text_result(rpc_id, _DENIED, is_error=True))
+            ds = await GenbiDatasourceCRUD(auth, db).get(id=link.datasource_id)
+            if ds is None or not ds.enabled:
+                return _Ready(_text_result(rpc_id, _DENIED, is_error=True))
+            return _AskCall(
+                group_id=group_id,
+                datasource_id=link.datasource_id,
+                system_id=ds.system_id,
+                arguments=arguments,
+            )
         return _Ready(_text_result(rpc_id, _DENIED, is_error=True))
 
     async def _load_upstream(self, db: Any, source_id: int, arguments: dict[str, Any]) -> _UpstreamCall | None:
@@ -354,7 +393,7 @@ class McpRuntime:
         group_id: int,
         method: Any,
         params: dict[str, Any],
-        plan: _Ready | _RestCall | _UpstreamCall,
+        plan: _Ready | _RestCall | _UpstreamCall | _AskCall,
     ) -> _CallFact | None:
         if method != "tools/call":
             return None
@@ -368,6 +407,13 @@ class McpRuntime:
                 tool_name=name,
                 system_id=None,
                 upstream_id=plan.upstream_id,
+            )
+        if isinstance(plan, _AskCall):
+            return _CallFact(
+                user_id=user_id,
+                group_id=group_id,
+                tool_name=name,
+                system_id=plan.system_id,
             )
         system_id, upstream_id = await self._owner_ids(db, group_id, name)
         return _CallFact(
@@ -419,6 +465,21 @@ class McpRuntime:
             http_status,
             upstream_id=fact.upstream_id,
         )
+
+    async def _perform_ask(self, db: Any, plan: _AskCall) -> _Performed:
+        from app.modules.genbi.runtime_tool import execute_ask_bi
+
+        try:
+            text, is_error, http_status = await execute_ask_bi(
+                AuthSchema(),
+                db,
+                group_id=plan.group_id,
+                datasource_id=plan.datasource_id,
+                arguments=plan.arguments,
+            )
+            return _Performed(text, http_status, is_error=is_error)
+        except CustomException as exc:
+            return _Performed(exc.msg or "问数失败", None, is_error=True)
 
     async def _perform(self, request: Request, plan: _RestCall | _UpstreamCall) -> _Performed:
         try:

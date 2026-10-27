@@ -63,7 +63,12 @@ class GenbiGroupDatasourceService:
         ds = await GenbiDatasourceCRUD(self.auth, self.db).get(id=datasource_id)
         if ds is None:
             raise CustomException(msg="数据源不存在")
-        name = (external_name or "").strip() or self._default_external_name(ds.name)
+        if (external_name or "").strip():
+            name = (external_name or "").strip()
+        else:
+            from app.modules.genbi.runtime_tool import suggest_external_name
+
+            name = await suggest_external_name(self.auth, self.db, datasource_id)
         await self._require_unique_external_name(group_id, name)
         existing = await GenbiGroupDatasourceCRUD(self.auth, self.db).get(
             group_id=group_id, datasource_id=datasource_id
