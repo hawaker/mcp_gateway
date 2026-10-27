@@ -92,6 +92,20 @@ async def update_mcp_group_controller(
     return SuccessResponse(data=result, msg="修改 MCP 组成功")
 
 
+@McpGroupRouter.post(
+    "/validate-selection/{id}",
+    summary="校验组已配置 REST/上游/数据源至少一类",
+    response_model=ResponseSchema[None],
+)
+async def validate_mcp_group_selection_controller(
+    auth: Annotated[AuthSchema, Security(AuthPermission(["module_mcp_gateway:mcp-group:query"]))],
+    db: Annotated[AsyncSession, Depends(db_getter)],
+    id: Annotated[int, Path(description="MCP 组ID", ge=1)],
+) -> JSONResponse:
+    await McpGroupService(auth, db).validate_selection(group_id=id)
+    return SuccessResponse(data=None, msg="组工具选择有效")
+
+
 @McpGroupRouter.get(
     "/tool/list",
     summary="分页查询组内工具",

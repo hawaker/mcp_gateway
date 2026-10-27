@@ -6,6 +6,7 @@ from app.modules.ai.chat.controller import ChatRouter
 from app.modules.common.file.controller import FileRouter
 from app.modules.dbconsole.controller import DbConsoleRouter
 from app.modules.generator.gencode.controller import GenRouter
+from app.modules.genbi.acl.controller import GenbiGroupDatasourceRouter
 from app.modules.genbi.datasource.controller import GenbiDatasourceRouter
 from app.modules.genbi.project.controller import GenbiProjectRouter
 from app.modules.mcp_gateway.auth.controller import BizAuthRouter
@@ -91,6 +92,7 @@ DOMAIN_CONTROLLERS: dict[str, list[APIRouter]] = {
         RestToolRouter,
         UpstreamRouter,
         McpGroupRouter,
+        GenbiGroupDatasourceRouter,
         CallLogRouter,
         SmtpRouter,
         MailRouter,

@@ -300,6 +300,19 @@ class McpGroupService:
         """始终拒绝。不读取、不删除成员或凭证。"""
         raise NotFound("成员不能删除")
 
+    async def validate_selection(self, group_id: int) -> None:
+        """组保存校验：REST ∪ 上游 ∪ 数据源至少一类。"""
+        await self._require_group(group_id)
+        tools = await McpGroupToolCRUD(self.auth, self.db).get_list(search={"group_id": group_id})
+        if tools:
+            return
+        from app.modules.genbi.acl.service import GenbiGroupDatasourceService
+
+        ds_count = await GenbiGroupDatasourceService(self.auth, self.db).count_for_group(group_id)
+        if ds_count > 0:
+            return
+        raise CustomException(msg="至少需要配置一类：REST、上游或数据源")
+
     async def _require_group(self, group_id: int) -> None:
         group = await McpGroupCRUD(self.auth, self.db).get(id=group_id)
         if group is None:
