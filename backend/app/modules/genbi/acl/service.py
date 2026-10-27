@@ -88,11 +88,14 @@ class GenbiGroupDatasourceService:
         current = await GenbiGroupDatasourceCRUD(self.auth, self.db).get(id=link_id)
         if current is None:
             raise CustomException(msg="组数据源关联不存在")
-        payload = data.model_dump(exclude_unset=True)
-        external_name = payload.get("external_name")
-        if external_name:
+        payload = data.model_dump(exclude_unset=True, exclude_none=True)
+        if "external_name" in data.model_fields_set:
+            name = (data.external_name or "").strip()
+            if not name:
+                raise CustomException(msg="对外工具名不能为空")
+            payload["external_name"] = name
             await self._require_unique_external_name(
-                current.group_id, external_name, exclude_id=current.id
+                current.group_id, name, exclude_id=current.id
             )
         if not payload:
             return GenbiGroupDatasourceOut.model_validate(current)

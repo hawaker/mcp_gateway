@@ -151,6 +151,36 @@ async def test_acl_models_have_no_member_fields(db) -> None:
             assert forbidden not in columns, f"{cls_name} must not have {forbidden}"
 
 
+async def test_update_rejects_empty_external_name(db) -> None:
+    """更新不得把 required external_name 清成 null/空串。"""
+    from app.modules.genbi.acl.schema import GenbiGroupDatasourceUpdate
+    from app.modules.genbi.acl.service import GenbiGroupDatasourceService
+
+    system = await _system(db, "oa_name_guard", base_url="https://oa.example.com")
+    ds = await _datasource(db, system_id=system.id, name="命名源")
+    group = await _mcp_group(db, name="命名组")
+    svc = GenbiGroupDatasourceService(AuthSchema(), db)
+    link = await svc.attach(
+        group_id=group.id,
+        datasource_id=ds.id,
+        external_name="keep_me_ask_bi",
+    )
+
+    with pytest.raises(CustomException) as ei:
+        await svc.update(link.id, GenbiGroupDatasourceUpdate(external_name=None))
+    assert "不能为空" in str(ei.value.msg)
+
+    with pytest.raises(CustomException) as ei2:
+        await svc.update(link.id, GenbiGroupDatasourceUpdate(external_name="   "))
+    assert "不能为空" in str(ei2.value.msg)
+
+    from app.modules.genbi.acl.crud import GenbiGroupDatasourceCRUD
+
+    row = await GenbiGroupDatasourceCRUD(AuthSchema(), db).get(id=link.id)
+    assert row is not None
+    assert row.external_name == "keep_me_ask_bi"
+
+
 async def test_group_selection_requires_rest_or_upstream_or_datasource(db) -> None:
     """组保存校验：REST ∪ 上游 ∪ 数据源 至少一类。"""
     from app.modules.genbi.acl.service import GenbiGroupDatasourceService
