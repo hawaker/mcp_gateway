@@ -166,6 +166,21 @@ class Settings(BaseSettings):
     HTTPX_DEFAULT_TIMEOUT: float = 10.0  # 对外 HTTP 请求默认超时（秒）
 
     # ================================================= #
+    # ******************* GenBI / Wren ******************* #
+    # ================================================= #
+    # ibis / Wren engine endpoints (optional until compose is up)
+    GENBI_IBIS_ENDPOINT: str = "http://127.0.0.1:8001"
+    GENBI_WREN_ENGINE_ENDPOINT: str = "http://127.0.0.1:8080"
+    # Vector index MUST use the same application PostgreSQL (pgvector).
+    # Leave GENBI_VECTOR_* empty to reuse DATABASE_* below — do NOT add a second vector DB.
+    GENBI_VECTOR_DATABASE_URL: str = ""
+    GENBI_VECTOR_PG_HOST: str = ""
+    GENBI_VECTOR_PG_PORT: int = 5432
+    GENBI_VECTOR_PG_USER: str = ""
+    GENBI_VECTOR_PG_PASSWORD: str = ""
+    GENBI_VECTOR_PG_DB: str = ""
+
+    # ================================================= #
     # ********************* 日志配置 ******************* #
     # ================================================= #
     OPERATION_RECORD_METHOD: list[str] = [
@@ -345,6 +360,29 @@ class Settings(BaseSettings):
             name = self.DATABASE_NAME if self.DATABASE_NAME.endswith(".db") else f"{self.DATABASE_NAME}.db"
             db_connect = f"sqlite+aiosqlite:///{name}"
         return db_connect
+
+    @property
+    def genbi_vector_database_url(self) -> str:
+        """GenBI pgvector connection — same app Postgres by default.
+
+        Prefer ``GENBI_VECTOR_DATABASE_URL``, else compose from ``GENBI_VECTOR_PG_*``,
+        else fall back to application ``DATABASE_*`` (postgres). Never spins up a
+        separate vector database service.
+        """
+        explicit = (self.GENBI_VECTOR_DATABASE_URL or "").strip()
+        if explicit:
+            return explicit
+        host = (self.GENBI_VECTOR_PG_HOST or "").strip()
+        db = (self.GENBI_VECTOR_PG_DB or "").strip()
+        user = (self.GENBI_VECTOR_PG_USER or "").strip()
+        if host and db and user:
+            password = self.GENBI_VECTOR_PG_PASSWORD or ""
+            return (
+                f"postgresql://{user}:{quote_plus(password)}"
+                f"@{host}:{self.GENBI_VECTOR_PG_PORT}/{db}"
+            )
+        # Same application DB (GenBI requires DATABASE_TYPE=postgres in production).
+        return self.DB_URI
 
     @property
     def DB_URI(self) -> str:
